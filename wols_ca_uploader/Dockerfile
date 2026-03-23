@@ -1,11 +1,18 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
-FROM $BUILD_FROM
+# We gebruiken de officiële Python image in plaats van de HA-base om s6 te vermijden
+FROM python:3.12-alpine
 
-RUN apk add --no-cache python3 py3-pip
-RUN pip3 install paho-mqtt --break-system-packages
+# Installeer de benodigde MQTT library
+RUN pip install --no-cache-dir paho-mqtt
 
+# Map aanmaken voor de app
 WORKDIR /app
+
+# Kopieer het script
 COPY wols_ca_uploader.py .
 
-# We omzeilen s6 door python direct als init te draaien
-CMD ["python3", "/app/wols_ca_uploader.py"]
+# CRUCIAL: Hiermee vertellen we HA dat we GEEN s6-overlay willen gebruiken
+ENV S6_SERVICES_GRACETIME=0
+ENV S6_READ_ONLY_ROOT=1
+
+# Start het script direct
+ENTRYPOINT ["python", "wols_ca_uploader.py"]
