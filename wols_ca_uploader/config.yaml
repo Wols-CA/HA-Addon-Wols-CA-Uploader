@@ -1,15 +1,14 @@
 name: "Wols-CA MQTT AutomationUploader"
-version: "1.0.5"
+version: "1.0.6"
 slug: "wols_ca_uploader"
 description: "Uploads automations to HA via MQTT"
-startup: "services"
-boot: "auto"
 arch:
-  - amd64
   - aarch64
+  - amd64
+  - armhf
   - armv7
   - i386
-map:
-  - config:rw
-options: {}
-schema: {}
+startup: application
+boot: auto
+options:
+  log_level: info
