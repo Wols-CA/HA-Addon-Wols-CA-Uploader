@@ -30,6 +30,11 @@ MQTT_PASS = conf.get("mqtt_password", "")
 MQTT_TOPIC = conf.get("mqtt_topic", "wols-ca/admin/automation_upload")
 AUTOMATIONS_DIR = "/config/automations"
 
+# --- VISUAL CLEAN START ---
+print("\n" + "="*50)
+print("       WOLS-CA UPLOADER - NEW SESSION STARTED")
+print("="*50 + "\n")
+
 parts_buffer = defaultdict(dict)
 current_versions = {}
 failed_attempts = 0
@@ -93,7 +98,6 @@ while True:
         failed_attempts += 1
         logger.error(f"NETWORK ERROR: {e}")
     
-    # Bepaal wachttijd
     sleep_time = 300 if failed_attempts >= 5 else 15
     logger.info(f"WAITING {sleep_time} seconds before retry...")
     time.sleep(sleep_time)
