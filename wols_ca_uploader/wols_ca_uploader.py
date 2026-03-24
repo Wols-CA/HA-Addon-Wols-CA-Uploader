@@ -4,11 +4,19 @@ import base64
 import os
 import sys
 import time
+import logging
 from collections import defaultdict
+
+# --- LOGGER SETUP ---
+logging.basicConfig(
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    level=logging.INFO,
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # --- HA OPTIONS LOADER ---
 OPTIONS_PATH = "/data/options.json"
-
 if os.path.exists(OPTIONS_PATH):
     with open(OPTIONS_PATH) as f:
         conf = json.load(f)
@@ -26,21 +34,19 @@ parts_buffer = defaultdict(dict)
 current_versions = {}
 failed_attempts = 0
 
-def on_connect(client, userdata, flags, reason_code, properties=None):
+def on_connect(client, userdata, flags, rc, properties=None):
     global failed_attempts
-    if reason_code == 0:
-        print(f"✅ Succesvol verbonden met {MQTT_BROKER} als gebruiker: '{MQTT_USER}'")
+    if rc == 0:
+        logger.info(f"✅ Verbonden met {MQTT_BROKER} als '{MQTT_USER}'")
         failed_attempts = 0
         client.subscribe(MQTT_TOPIC)
-        print(f"📡 Geabonneerd op topic: {MQTT_TOPIC}")
+        logger.info(f"📡 Geabonneerd op topic: {MQTT_TOPIC}")
     else:
         failed_attempts += 1
-        print(f"❌ Verbinding mislukt voor '{MQTT_USER}' (Code: {reason_code}). Poging: {failed_attempts}")
-        if reason_code == 5:
-            print("   👉 Tip: Code 5 betekent 'Not Authorized'. Controleer je gebruikersnaam/wachtwoord.")
+        logger.error(f"❌ Login geweigerd voor '{MQTT_USER}' (Code: {rc})")
 
 def on_message(client, userdata, msg):
-    print(f"📩 Bericht ontvangen op {msg.topic}")
+    logger.info(f"📩 Bericht ontvangen op {msg.topic}")
     try:
         payload = json.loads(msg.payload.decode())
         filename = payload["filename"]
@@ -61,11 +67,11 @@ def on_message(client, userdata, msg):
             with open(os.path.join(AUTOMATIONS_DIR, filename), "w") as f:
                 f.write(full_content.decode('utf-8'))
             
-            print(f"🚀 Bestand geïnstalleerd: {filename} (v{version})")
+            logger.info(f"🚀 Bestand geïnstalleerd: {filename} (v{version})")
             current_versions[filename] = version
             del parts_buffer[key]
     except Exception as e:
-        print(f"🔥 Fout bij verwerken: {e}")
+        logger.error(f"🔥 Fout bij verwerken: {e}")
 
 # --- SETUP ---
 client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
@@ -73,29 +79,19 @@ client.on_connect = on_connect
 client.on_message = on_message
 
 if MQTT_USER and MQTT_PASS:
-    print(f"🔑 Gebruikersnaam gevonden in configuratie: '{MQTT_USER}'")
-    # We tonen het wachtwoord niet, maar wel dat het gezet is
-    print(f"🔐 Wachtwoord is ingesteld (lengte: {len(MQTT_PASS)} tekens)")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
-else:
-    print("⚠️ Geen gebruikersnaam/wachtwoord geconfigureerd. We proberen anoniem te verbinden.")
 
-print(f"🚀 Start Uploader Service...")
+logger.info("🚀 Start Uploader Service...")
 
 # --- MAIN LOOP ---
 while True:
     try:
-        print(f"Verbinden met {MQTT_BROKER}:{MQTT_PORT}...")
+        logger.info(f"Verbinden met {MQTT_BROKER}:{MQTT_PORT}...")
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         client.loop_forever() 
     except Exception as e:
         failed_attempts += 1
-        print(f"💥 Netwerkfout: {e}")
+        logger.error(f"💥 Netwerkfout: {e}")
     
-    # Vertraging bij mislukking
-    if failed_attempts >= 5:
-        print("🕒 Te veel mislukte pogingen. Wachten van 5 minuten...")
-        time.sleep(300)
-    else:
-        print(f"🔄 Korte pauze van 15 seconden voor herpoging {failed_attempts + 1}...")
-        time.sleep(15)
+    sleep_time = 300 if failed_attempts >= 5 else 15
+    logger.info(f"🔄
