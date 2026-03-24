@@ -37,16 +37,16 @@ failed_attempts = 0
 def on_connect(client, userdata, flags, rc, properties=None):
     global failed_attempts
     if rc == 0:
-        logger.info(f"✅ Verbonden met {MQTT_BROKER} als '{MQTT_USER}'")
+        logger.info(f"CONNECTED to {MQTT_BROKER} as {MQTT_USER}")
         failed_attempts = 0
         client.subscribe(MQTT_TOPIC)
-        logger.info(f"📡 Geabonneerd op topic: {MQTT_TOPIC}")
+        logger.info(f"SUBSCRIBED to topic: {MQTT_TOPIC}")
     else:
         failed_attempts += 1
-        logger.error(f"❌ Login geweigerd voor '{MQTT_USER}' (Code: {rc})")
+        logger.error(f"AUTH FAILED for {MQTT_USER} (Code: {rc})")
 
 def on_message(client, userdata, msg):
-    logger.info(f"📩 Bericht ontvangen op {msg.topic}")
+    logger.info(f"MESSAGE received on {msg.topic}")
     try:
         payload = json.loads(msg.payload.decode())
         filename = payload["filename"]
@@ -67,11 +67,11 @@ def on_message(client, userdata, msg):
             with open(os.path.join(AUTOMATIONS_DIR, filename), "w") as f:
                 f.write(full_content.decode('utf-8'))
             
-            logger.info(f"🚀 Bestand geïnstalleerd: {filename} (v{version})")
+            logger.info(f"INSTALLED: {filename} (v{version})")
             current_versions[filename] = version
             del parts_buffer[key]
     except Exception as e:
-        logger.error(f"🔥 Fout bij verwerken: {e}")
+        logger.error(f"PROCESSING ERROR: {e}")
 
 # --- SETUP ---
 client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
@@ -81,17 +81,19 @@ client.on_message = on_message
 if MQTT_USER and MQTT_PASS:
     client.username_pw_set(MQTT_USER, MQTT_PASS)
 
-logger.info("🚀 Start Uploader Service...")
+logger.info("STARTING Uploader Service...")
 
 # --- MAIN LOOP ---
 while True:
     try:
-        logger.info(f"Verbinden met {MQTT_BROKER}:{MQTT_PORT}...")
+        logger.info(f"CONNECTING to {MQTT_BROKER}:{MQTT_PORT}...")
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         client.loop_forever() 
     except Exception as e:
         failed_attempts += 1
-        logger.error(f"💥 Netwerkfout: {e}")
+        logger.error(f"NETWORK ERROR: {e}")
     
+    # Bepaal wachttijd
     sleep_time = 300 if failed_attempts >= 5 else 15
-    logger.info(f"🔄
+    logger.info(f"WAITING {sleep_time} seconds before retry...")
+    time.sleep(sleep_time)
