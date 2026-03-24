@@ -18,7 +18,7 @@ else:
 
 MQTT_BROKER = conf.get("mqtt_broker", "192.168.101.240")
 MQTT_PORT = conf.get("mqtt_port", 1883)
-MQTT_USER = conf.get("mqtt_user", "")
+MQTT_USER = conf.get("mqtt_user", "wols-ca-admin")
 MQTT_PASS = conf.get("mqtt_password", "")
 MQTT_TOPIC = conf.get("mqtt_topic", "wols-ca/admin/automation_upload")
 AUTOMATIONS_DIR = "/config/automations"
