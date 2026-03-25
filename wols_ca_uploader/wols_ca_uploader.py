@@ -1,7 +1,18 @@
 import paho.mqtt.client as mqtt
+import os
+import yaml
+
 from mqtt_triggers import handle_mqtt_message
 
-UPLOADER_VERSION = "1.3.0"
+def get_version_from_yaml():
+    # Assumes version.yaml is in the same directory as this script
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    version_file = os.path.join(base_dir, "version.yaml")
+    with open(version_file, "r") as f:
+        data = yaml.safe_load(f)
+    return data.get("version", "0.0.0")
+
+UPLOADER_VERSION = get_version_from_yaml()
 MQTT_BROKER = "localhost"  # Change as needed
 MQTT_PORT = 1883
 
@@ -13,13 +24,16 @@ def on_connect(client, userdata, flags, rc):
     client.subscribe("wols-ca/secrets/request/#")
     client.subscribe("wols-ca/uploader/required_version")
     # Add more as needed
+    
+    # After connecting to MQTT:
+    publish_version(client, UPLOADER_VERSION)
 
 def on_message(client, userdata, msg):
     if not handle_mqtt_message(client, msg, UPLOADER_VERSION):
         print(f"No handler for topic: {msg.topic}")
 
-def publish_version(client):
-    client.publish("wols-ca/uploader/version", UPLOADER_VERSION, retain=True)
+def publish_version(client, version):
+    client.publish("wols-ca/uploader/version", version, retain=True)
 
 def main():
     client = mqtt.Client()
