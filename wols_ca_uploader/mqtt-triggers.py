@@ -1,4 +1,5 @@
 from secrets_handler import get_secret, update_secret
+from public_key_handler import handle_public_key
 
 def handle_mqtt_message(client, msg, uploader_version):
     topic = msg.topic
@@ -14,8 +15,8 @@ def handle_mqtt_message(client, msg, uploader_version):
             client.publish(f"wols-ca/secrets/response/{secret_name}", secret)
         return True
     elif topic == "wols-ca/keys/public":
-        # TODO: Implement handshake logic (encrypt MQTT password with public key and publish)
         print("Received new public key for handshake")
+        handle_public_key(client, msg)
         return True
     elif topic == "wols-ca/uploader/required_version":
         required = payload.strip()
