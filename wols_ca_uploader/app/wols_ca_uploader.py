@@ -5,9 +5,7 @@ import yaml
 from mqtt_triggers import handle_mqtt_message
 
 def get_version_from_yaml():
-    # Assumes version.yaml is in the same directory as this script
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    version_file = os.path.join(base_dir, "version.yaml")
+    version_file = "/config/version.yaml"
     with open(version_file, "r") as f:
         data = yaml.safe_load(f)
     return data.get("version", "0.0.0")
