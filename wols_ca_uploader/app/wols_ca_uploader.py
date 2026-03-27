@@ -47,7 +47,14 @@ def publish_version(client, version):
     client.publish("wols-ca/uploader/version", version, retain=True)
 
 def main():
+    printString = "Uploader Version: " + str(get_version_from_yaml())
+    print(printString)
+
     MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, MQTT_TOPIC = get_mqtt_settings()
+
+    printString = f"MQTT Settings - Broker: {MQTT_BROKER}, Port: {MQTT_PORT}, User: {MQTT_USER}, Topic: {MQTT_TOPIC}"
+    print(printString)
+
     client = mqtt.Client()
     if MQTT_USER and MQTT_PASSWORD:
         client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
