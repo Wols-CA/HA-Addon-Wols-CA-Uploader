@@ -10,6 +10,9 @@ WORKDIR /app
 
 # Copy your Python script(s) into the container
 COPY wols_ca_uploader.py .
+   COPY mqtt-triggers.py .
+   COPY public_key_handler.py .
+   COPY secrets_handler.py .
 
 # (Optional) Copy other needed files, e.g. version.yaml, handler modules, etc.
 # COPY version.yaml .
