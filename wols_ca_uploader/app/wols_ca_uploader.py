@@ -14,6 +14,19 @@ UPLOADER_VERSION = get_version_from_yaml()
 MQTT_BROKER = "localhost"  # Change as needed
 MQTT_PORT = 1883
 
+def get_mqtt_settings():
+    config_file = "wols_ca_uploader/config.yaml"
+    with open(config_file, "r") as f:
+        data = yaml.safe_load(f)
+    options = data.get("options", {})
+    return (
+        options.get("mqtt_broker", "localhost"),
+        options.get("mqtt_port", 1883),
+        options.get("mqtt_user", None),
+        options.get("mqtt_password", None),
+        options.get("mqtt_topic", None)
+    )
+
 def on_connect(client, userdata, flags, rc):
     print("Connected with result code", rc)
     # Subscribe to all relevant topics for triggers, handshake, secrets, etc.
@@ -34,7 +47,10 @@ def publish_version(client, version):
     client.publish("wols-ca/uploader/version", version, retain=True)
 
 def main():
+    MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, MQTT_TOPIC = get_mqtt_settings()
     client = mqtt.Client()
+    if MQTT_USER and MQTT_PASSWORD:
+        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
