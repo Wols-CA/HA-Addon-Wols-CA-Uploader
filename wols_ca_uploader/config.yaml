@@ -1,5 +1,5 @@
 name: "Wols-CA MQTT AutomationUploader"
-version: "1.3.4"
+version: "1.3.6"
 slug: "wols_ca_uploader"
 description: "Uploads automations to HA via MQTT"
 arch:
@@ -19,3 +19,5 @@ schema:
   mqtt_user: str?
   mqtt_password: str?
   mqtt_topic: str
+map:
+     - config:rw
