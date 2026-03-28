@@ -1,11 +1,12 @@
 import paho.mqtt.client as mqtt
 import os
 import yaml
+import json
 
 from mqtt_triggers import handle_mqtt_message
 
 def get_version_from_yaml():
-    version_file = "/config/version.yaml"
+    version_file = "config/version.yaml"
     with open(version_file, "r") as f:
         data = yaml.safe_load(f)
     return data.get("version", "0.0.0")
@@ -15,16 +16,14 @@ MQTT_BROKER = "localhost"  # Change as needed
 MQTT_PORT = 1883
 
 def get_mqtt_settings():
-    config_file = "wols_ca_uploader/config.yaml"
-    with open(config_file, "r") as f:
-        data = yaml.safe_load(f)
-    options = data.get("options", {})
+    with open('/data/options.json', 'r') as f:
+        data = json.load(f)
     return (
-        options.get("mqtt_broker", "localhost"),
-        options.get("mqtt_port", 1883),
-        options.get("mqtt_user", None),
-        options.get("mqtt_password", None),
-        options.get("mqtt_topic", None)
+        data.get("mqtt_broker", "localhost"),
+        data.get("mqtt_port", 1883),
+        data.get("mqtt_user", None),
+        data.get("mqtt_password", None),
+        data.get("mqtt_topic", None)
     )
 
 def on_connect(client, userdata, flags, rc):
