@@ -1,42 +1,78 @@
 import base64
 import logging
-import secrets  # For random password generation
+import secrets
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from secrets_handler import get_secret
 
+# Global key states
+active_public_key = None  # The "Trusted" key
+temp_public_key = None    # The "Probation" key
+
 def handle_public_key(client, msg):
+    global temp_public_key, active_public_key
     try:
-        public_key_pem = msg.payload.decode().strip()
+        logging.info("Handling received public key for handshake...")
+        # Reset states on a new key attempt
+        active_public_key = None
+        temp_public_key = None
+
+        payload = msg.payload.decode().strip()
+        new_key = serialization.load_pem_public_key(payload.encode())
         
-        # 1. Load and validate the key
-        public_key = serialization.load_pem_public_key(public_key_pem.encode())
+        if not isinstance(new_key, rsa.RSAPublicKey):
+            raise TypeError("Invalid RSA Key Type")
+            
+        temp_public_key = new_key
+        logging.info("Phase 1: New key placed in probation. Sending password for verification...")
         
-        if not isinstance(public_key, rsa.RSAPublicKey):
-            raise TypeError("Received key is not an RSA Public Key")
-
-        # 2. Get the real secret or generate a random "answer" as fallback
-        mqtt_password = get_secret("mqtt_password")
-        if not mqtt_password:
-            logging.warning("Real MQTT password not found. Sending random fallback.")
-            mqtt_password = secrets.token_urlsafe(16)  # Random 16-char string
-
-        # 3. Encrypt using RSA-OAEP
-        encrypted = public_key.encrypt(
-            mqtt_password.encode(),
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
-            )
-        )
+        # Local import to avoid circular dependency
+        from mqtt_triggers import send_encrypted_payload
+        mqtt_pw = get_secret("mqtt_password")
         
-        encrypted_b64 = base64.b64encode(encrypted).decode()
-
-        # 4. Publish to the specific backend topic
-        # Note: Match the topic your C++ backend expects!
-        client.publish("wols-ca/admin/encrypted_password", encrypted_b64)
-        logging.info("Encrypted password sent to backend. Waiting for ACK...")
-
+        # Encrypt with the temp_public_key via the helper
+        send_encrypted_payload(client, "wols-ca/admin/encrypted_password", mqtt_pw)
+        
     except Exception as e:
-        logging.error(f"Handshake Failed - Public Key Error: {e}")
+        logging.error(f"Handshake Error: {e}. Clearing keys and forcing reset.")
+        temp_public_key = None
+        active_public_key = None
+        
+        # Trigger the "Poison Pill" via the encryption helper
+        from mqtt_triggers import send_encrypted_payload
+        send_encrypted_payload(client, "wols-ca/admin/encrypted_password", "FORCE_RESET")
+
+def encrypted_text(topic, plaintext):
+    """Encrypts text using the best available key; falls back to random noise."""
+    key_to_use = active_public_key or temp_public_key
+
+    if not key_to_use:
+        logging.error(f"Encryption failed for {topic}: No keys available.")
+        # Generate 256 bytes of random noise to mimic RSA-2048
+        return base64.b64encode(secrets.token_bytes(256)).decode()
+
+    # Perform RSA-OAEP encryption
+    encrypted = key_to_use.encrypt(
+        plaintext.encode(),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    return base64.b64encode(encrypted).decode()
+
+def is_public_key_active():
+    """Corrected spelling to match mqtt_triggers.py usage."""
+    if not active_public_key:
+        return False
+    return True
+
+def promote_temp_key():
+    """Moves the probation key to the trusted active state."""
+    global active_public_key, temp_public_key
+    if temp_public_key:
+        active_public_key = temp_public_key
+        logging.info("🚀 Handshake Verified: Key promoted to ACTIVE.")
+    else:
+        logging.error("Attempted to promote key, but temp_public_key is empty!")

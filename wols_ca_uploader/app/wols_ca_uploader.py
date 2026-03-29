@@ -3,18 +3,18 @@ import logging
 
 # 1. ENFORCE VERSION AT THE TOP
 if sys.version_info < (3, 12):
-    # We use print here because logging might not be configured yet
     print("FATAL: This addon requires Python 3.12 or higher.")
     print(f"Current version: {sys.version}")
     sys.exit(1)
 
 import paho.mqtt.client as mqtt
-import os
 import yaml
 import json
 import traceback
 
 from mqtt_triggers import handle_mqtt_message
+# Note: We don't need to import active_public_key here anymore 
+# because mqtt_triggers and public_key_handler handle the logic.
 
 # Global variable to hold the version across callbacks
 current_version = "Unknown"
@@ -25,7 +25,6 @@ logging.basicConfig(
 )
 
 def get_version_from_yaml():
-    """Reads version from the internal path defined in the Dockerfile."""
     version_file = "/app/internal/version.yaml"
     try:
         with open(version_file, "r") as f:
@@ -36,20 +35,15 @@ def get_version_from_yaml():
         return "Unknown"
 
 def get_mqtt_settings():
-    """Reads settings from HA Options, mapping snake_case keys correctly."""
     config_file = "/data/options.json"
     try:
         with open(config_file, 'r') as f:
             data = json.load(f)
-
-        # Match keys defined in config.yaml schema
         broker = data.get("mqtt_broker", "localhost")
         port = data.get("mqtt_port", 1883)
         user = data.get("mqtt_user", None)
         password = data.get("mqtt_password", None)
         topic = data.get("mqtt_topic", None)
-
-        logging.info(f"MQTT Settings - Broker: {broker}, Port: {port}, User: {user}, Topic: {topic}")
         return broker, port, user, password, topic
     except Exception as e:
         logging.error(f"Critical error loading /data/options.json: {e}")
@@ -58,25 +52,29 @@ def get_mqtt_settings():
 def on_connect(client, userdata, flags, reason_code, properties=None):
     if reason_code == 0:
         logging.info("Connected successfully to MQTT broker (API v2).")
-        # Standard subscriptions
-        client.subscribe("wols-ca/trigger/#")
-        client.subscribe("wols-ca/uploader/required_version")
-        
-        # Handshake subscriptions
-        client.subscribe("wols-ca/keys/public")
-        client.subscribe("wols-ca/admin/password_ack")  # REQUIRED FOR HANDSHAKE
 
-        # Publish current version on connect
+        # 1. Subscriptions
+        client.subscribe([
+            ("wols-ca/trigger/#", 0),
+            ("wols-ca/uploader/required_version", 0),
+            ("wols-ca/keys/public", 0),
+            ("wols-ca/admin/password_ack", 0)
+        ])
+        
+        # 2. Proactively request a key pair
+        client.publish("wols-ca/admin/request_key", "STARTUP_SYNC")
+
+        # 3. Publish current version
         publish_version(client, current_version)
     else:
         logging.error(f"Connection failed with result code {reason_code}")
 
 def on_message(client, userdata, msg):
+    # Pass off to our trigger handler
     if not handle_mqtt_message(client, msg, current_version):
-        logging.info(f"No handler for topic: {msg.topic}")
+        logging.debug(f"No specific handler for topic: {msg.topic}")
 
 def publish_version(client, version):
-    logging.debug(f"Publishing uploader version to MQTT: {version}")
     client.publish("wols-ca/uploader/version", version, retain=True)
 
 def log_start_banner(version, broker, port, user, topic):
@@ -93,13 +91,18 @@ def log_start_banner(version, broker, port, user, topic):
 
 def main():
     global current_version
+    # REMOVED: active_public_key/temp_public_key local definitions here.
+    # These are handled globally within public_key_handler.py.
+
     try:
         current_version = get_version_from_yaml()
         broker, port, user, password, topic = get_mqtt_settings()
 
         log_start_banner(current_version, broker, port, user, topic)
         
+        # Using CallbackAPIVersion.VERSION2 for paho-mqtt 2.x
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        
         if user and password:
             client.username_pw_set(user, password)
             
@@ -109,14 +112,12 @@ def main():
         
         logging.info(f"Attempting connection to {broker}...")
         client.connect(broker, port, 60)
-        
-        # Start the loop
         client.loop_forever()
         
     except Exception:
         logging.error("FATAL ERROR during startup:")
         logging.error(traceback.format_exc())
-        exit(1)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
