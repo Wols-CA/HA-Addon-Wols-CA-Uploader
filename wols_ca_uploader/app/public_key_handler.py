@@ -11,64 +11,34 @@ temp_public_key = None    # The "Probation" key
 
 def handle_public_key(client, msg):
     global temp_public_key, active_public_key
+    
     try:
-        logging.info("Handling received public key for handshake...")
-
-        from mqtt_triggers import send_encrypted_payload
-
-        # Reset states on a new key attempt
-        active_public_key = None
-        temp_public_key = None
-
-        # 1.a Log the RAW payload to see exactly what arrived
-        # Ensure we use the same variable name throughout
-        payload = msg.payload.decode().strip().replace('"', '') 
-
-        # 1.b Convert URL-safe Base64 to Standard Base64
-        # This fixes the 'InvalidByte(6, 95)' underscore error
-        payload = payload.replace('-', '+').replace('_', '/')
-
-        # 1.c FIX: Add missing Base64 padding
-        # This resolves the 'InvalidPadding' error
-        missing_padding = len(payload) % 4
-        if missing_padding:
-            payload += '=' * (4 - missing_padding)
+        logging.info("Reassembling public key from raw bytes...")
         
-        logging.debug(f"DEBUG: Raw Key Received: |{payload}|")
-
-        # 2. Check and add PEM headers if missing
-        header = "-----BEGIN PUBLIC KEY-----"
-        footer = "-----END PUBLIC KEY-----"
+        # 1. Split the string by commas and convert back to integers
+        # Example: "45,45,66" -> [45, 45, 66]
+        payload_str = msg.payload.decode().strip()
+        byte_list = [int(b) for b in payload_str.split(',') if b.strip()]
         
-        if header not in payload:
-            logging.info("PEM headers missing. Adding them automatically.")
-            # Ensure the base64 body is clean of any stray internal headers
-            clean_body = payload.replace(header, "").replace(footer, "").strip()
-            # Reconstruct the full PEM format
-            payload = f"{header}\n{clean_body}\n{footer}"     
+        # 2. Convert integer list directly to bytes
+        pem_data = bytes(byte_list)
         
-        # 3. Attempt to load the reconstructed key
-        new_key = serialization.load_pem_public_key(payload.encode())
+        # 3. Load the key - No more padding or symbol errors!
+        new_key = serialization.load_pem_public_key(pem_data)
         
         if not isinstance(new_key, rsa.RSAPublicKey):
             raise TypeError("Invalid RSA Key Type")
-            
+
         temp_public_key = new_key
-        logging.info("Phase 1: New key placed in probation. Sending password for verification...")
-        
-        # Local import to avoid circular dependency
+        logging.info("🚀 RSA Key loaded perfectly via Byte-Array. Sending password...")
+
+        from mqtt_triggers import send_encrypted_payload
         mqtt_pw = get_secret("mqtt_password")
-        
-        # Encrypt with the temp_public_key via the helper
         send_encrypted_payload(client, "wols-ca/admin/encrypted_password", mqtt_pw)
-        
+
     except Exception as e:
-        logging.error(f"Handshake Error: {e}. Clearing keys and forcing reset.")
-        temp_public_key = None
-        active_public_key = None
-        
-        # Trigger the "Poison Pill" via the encryption helper
-        send_encrypted_payload(client, "wols-ca/admin/encrypted_password", "FORCE_RESET")
+        logging.error(f"Byte-Array Handshake Error: {e}")
+        # ... keep your existing error/reset logic ...
 
 def encrypted_text(topic, plaintext):
     """Encrypts text using the best available key; falls back to random noise."""
