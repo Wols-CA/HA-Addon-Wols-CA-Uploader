@@ -55,9 +55,9 @@ def get_mqtt_settings():
         logging.error(f"Critical error loading /data/options.json: {e}")
         raise
 
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
-        logging.info("Connected successfully to MQTT broker.")
+def on_connect(client, userdata, flags, rc, properties=None):
+    if reason_code == 0:
+        logging.info("Connected successfully to MQTT broker (API v2).")
         # Subscribe to all relevant topics
         client.subscribe("wols-ca/trigger/#")
         client.subscribe("wols-ca/keys/public")
@@ -67,10 +67,9 @@ def on_connect(client, userdata, flags, rc):
         # Publish current version on connect
         publish_version(client, current_version)
     else:
-        logging.error(f"Connection failed with result code {rc}")
+        logging.error(f"Connection failed with result code {reason_code}")
 
 def on_message(client, userdata, msg):
-    # Pass the global version to the trigger handler
     if not handle_mqtt_message(client, msg, current_version):
         logging.info(f"No handler for topic: {msg.topic}")
 
