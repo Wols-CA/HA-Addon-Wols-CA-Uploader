@@ -20,9 +20,14 @@ def handle_public_key(client, msg):
         active_public_key = None
         temp_public_key = None
 
-        # 1. Log the RAW payload to see exactly what arrived
+        # 1.a Log the RAW payload to see exactly what arrived
         # Ensure we use the same variable name throughout
         payload = msg.payload.decode().strip().replace('"', '') 
+
+        # 1.b Convert URL-safe Base64 to Standard Base64
+        # This fixes the 'InvalidByte(6, 95)' underscore error
+        payload = payload.replace('-', '+').replace('_', '/')
+        
         logging.debug(f"DEBUG: Raw Key Received: |{payload}|")
 
         # 2. Check and add PEM headers if missing

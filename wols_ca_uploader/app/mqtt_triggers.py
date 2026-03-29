@@ -57,7 +57,7 @@ def handle_mqtt_message(client, msg, uploader_version):
             public_key_handler.temp_public_key = None
         return True
 
-    # 5. Version Check
+    # 6. Version Check
     elif topic == "wols-ca/uploader/required_version":
         required = payload.strip()
         if compare_versions(uploader_version, required):
@@ -67,7 +67,8 @@ def handle_mqtt_message(client, msg, uploader_version):
             client.publish("wols-ca/uploader/status", "Uploader version OK", retain=True)
             logging.info(f"Version OK: {uploader_version}")
         return True
-
+    elif topic in ["wols-ca/uploader/version", "wols-ca/admin/request_key", "wols-ca/admin/encrypted_password"]:
+        return True  # Ignore our own outbound traffic
     # No topic matched
     return False
 
