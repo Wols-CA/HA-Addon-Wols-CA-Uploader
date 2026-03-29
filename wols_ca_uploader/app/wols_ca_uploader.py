@@ -20,7 +20,7 @@ from mqtt_triggers import handle_mqtt_message
 current_version = "Unknown"
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
@@ -58,12 +58,14 @@ def get_mqtt_settings():
 def on_connect(client, userdata, flags, reason_code, properties=None):
     if reason_code == 0:
         logging.info("Connected successfully to MQTT broker (API v2).")
-        # Subscribe to all relevant topics
+        # Standard subscriptions
         client.subscribe("wols-ca/trigger/#")
-        client.subscribe("wols-ca/keys/public")
-        client.subscribe("wols-ca/secrets/request/#")
         client.subscribe("wols-ca/uploader/required_version")
         
+        # Handshake subscriptions
+        client.subscribe("wols-ca/keys/public")
+        client.subscribe("wols-ca/admin/password_ack")  # REQUIRED FOR HANDSHAKE
+
         # Publish current version on connect
         publish_version(client, current_version)
     else:
@@ -74,6 +76,7 @@ def on_message(client, userdata, msg):
         logging.info(f"No handler for topic: {msg.topic}")
 
 def publish_version(client, version):
+    logging.debug(f"Publishing uploader version to MQTT: {version}")
     client.publish("wols-ca/uploader/version", version, retain=True)
 
 def log_start_banner(version, broker, port, user, topic):
