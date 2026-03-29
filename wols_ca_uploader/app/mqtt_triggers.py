@@ -4,11 +4,6 @@ from secrets_handler import get_secret, update_secret
 from public_key_handler import handle_public_key
 from packaging.version import parse
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-
 def handle_mqtt_message(client, msg, uploader_version):
     topic = msg.topic
     try:
@@ -46,4 +41,4 @@ def refresh_playlists():
     logging.info("Refreshing playlists...")
 
 def compare_versions(current, required):
-    return version.parse(current) < version.parse(required)
+    return parse(current) < parse(required)

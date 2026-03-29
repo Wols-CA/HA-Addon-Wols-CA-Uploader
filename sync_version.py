@@ -7,7 +7,7 @@ except FileNotFoundError:
     config_data = {}
 f.close()
 
-printString = "Version: " + str(config_data.get('version'));
+printString = "version: " + str(config_data.get('version'));
 print(printString)
 
 with open('wols_ca_uploader/config/version.yaml', 'w') as f:

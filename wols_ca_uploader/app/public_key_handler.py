@@ -1,4 +1,5 @@
 import base64
+
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from secrets_handler import get_secret  # You should have this function

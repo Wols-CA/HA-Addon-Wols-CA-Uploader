@@ -1,17 +1,23 @@
+import sys
+import logging
+
+# 1. ENFORCE VERSION AT THE TOP
+if sys.version_info < (3, 12):
+    # We use print here because logging might not be configured yet
+    print("FATAL: This addon requires Python 3.12 or higher.")
+    print(f"Current version: {sys.version}")
+    sys.exit(1)
+
 import paho.mqtt.client as mqtt
 import os
 import yaml
 import json
-import logging
+import traceback
 
 from mqtt_triggers import handle_mqtt_message
 
-upLoaderVersion = ""
-mqttBroker = "localhost"  # Change as needed
-mqttPort = 1883
-mqttUser = ""
-mqttPassword = "" 
-mqttTopic = ""
+# Global variable to hold the version across callbacks
+current_version = "Unknown"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,83 +25,96 @@ logging.basicConfig(
 )
 
 def get_version_from_yaml():
-    version_file = "/config/version.yaml"
-    with open(version_file, "r") as f:
-        data = yaml.safe_load(f)
-    return data.get("version", "Unknown")
+    """Reads version from the internal path defined in the Dockerfile."""
+    version_file = "/app/internal/version.yaml"
+    try:
+        with open(version_file, "r") as f:
+            data = yaml.safe_load(f)
+        return data.get("version", "Unknown")
+    except Exception as e:
+        logging.error(f"Could not read version file: {e}")
+        return "Unknown"
 
 def get_mqtt_settings():
+    """Reads settings from HA Options, mapping snake_case keys correctly."""
     config_file = "/data/options.json"
-    with open(config_file, 'r') as f:
-        data = json.load(f)
+    try:
+        with open(config_file, 'r') as f:
+            data = json.load(f)
 
-        mqttBroker = data.get("mqttBroker", "localhost")
-        mqttPort = data.get("mqttPort", 1883)
-        mqttUser = data.get("mqttUser", None)
-        mqttPassword = data.get("mqtt_password", None)
-        mqttTopic = data.get("mqttTopic", None)
-        f.close();
+        # Match keys defined in config.yaml schema
+        broker = data.get("mqtt_broker", "localhost")
+        port = data.get("mqtt_port", 1883)
+        user = data.get("mqtt_user", None)
+        password = data.get("mqtt_password", None)
+        topic = data.get("mqtt_topic", None)
 
-    printString = f"MQTT Settings - Broker: {mqttBroker}, Port: {mqttPort}, User: {mqttUser}, Topic: {mqttTopic}"
-    logging.info(printString)
-    logging.info("")
-    return mqttBroker, mqttPort, mqttUser, mqttPassword, mqttTopic
-
+        logging.info(f"MQTT Settings - Broker: {broker}, Port: {port}, User: {user}, Topic: {topic}")
+        return broker, port, user, password, topic
+    except Exception as e:
+        logging.error(f"Critical error loading /data/options.json: {e}")
+        raise
 
 def on_connect(client, userdata, flags, rc):
-    logging.info("Connected with result code", rc)
-    # Subscribe to all relevant topics for triggers, handshake, secrets, etc.
-    client.subscribe("wols-ca/trigger/#")
-    client.subscribe("wols-ca/keys/public")
-    client.subscribe("wols-ca/secrets/request/#")
-    client.subscribe("wols-ca/uploader/required_version")
-    # After connecting to MQTT:
-    publish_version(client, upLoaderVersion)
-    # Add more as needed
-    
+    if rc == 0:
+        logging.info("Connected successfully to MQTT broker.")
+        # Subscribe to all relevant topics
+        client.subscribe("wols-ca/trigger/#")
+        client.subscribe("wols-ca/keys/public")
+        client.subscribe("wols-ca/secrets/request/#")
+        client.subscribe("wols-ca/uploader/required_version")
+        
+        # Publish current version on connect
+        publish_version(client, current_version)
+    else:
+        logging.error(f"Connection failed with result code {rc}")
 
 def on_message(client, userdata, msg):
-    if not handle_mqtt_message(client, msg, upLoaderVersion):
+    # Pass the global version to the trigger handler
+    if not handle_mqtt_message(client, msg, current_version):
         logging.info(f"No handler for topic: {msg.topic}")
 
 def publish_version(client, version):
     client.publish("wols-ca/uploader/version", version, retain=True)
 
-def LogStart( version, broker, port, user, password, topic):
-
-    starString = f"************************************************************************************************"
-
-    logging.info( str(starString))
+def log_start_banner(version, broker, port, user, topic):
+    border = "*" * 80
+    logging.info(border)
     logging.info("WOLS CA Uploader - MQTT Client for Home Assistant Add-on")
-    logging.info( str(starString))
-    logging.info("")
-
+    logging.info(border)
     logging.info(f"Version  : {version}")
-    logging.info("MQTT Settings:")
-    logging.info(f"  Broker : {broker}")
-    logging.info(f"  Port   : {port}")
-    logging.info(f"  User   : {user}") 
-    logging.info(f"  Topic  : {topic}")
-    logging.info("")
-    logging.info( str(starString))
-    logging.info("")
-
+    logging.info(f"Broker   : {broker}")
+    logging.info(f"Port     : {port}")
+    logging.info(f"User     : {user}") 
+    logging.info(f"Topic    : {topic}")
+    logging.info(border)
 
 def main():
-    uploaderVersion = get_version_from_yaml()
-    mqttBroker, mqttPort, mqttUser, mqttPassword, mqttTopic = get_mqtt_settings()
+    global current_version
+    try:
+        current_version = get_version_from_yaml()
+        broker, port, user, password, topic = get_mqtt_settings()
 
-    LogStart( uploaderVersion, mqttBroker, mqttPort, mqttUser, mqttPassword, mqttTopic)
-    
-    client = mqtt.Client()
-    if mqttUser and mqttPassword:
-        client.username_pw_set(mqttUser, mqttPassword)
-    client.on_connect = on_connect
-    client.on_message = on_message
-    client.reconnect_delay_set(min_delay=1, max_delay=60)  # delays in seconds
-    client.connect(mqttBroker, mqttPort, 60)
-    publish_version(client, upLoaderVersion)
-    client.loop_forever()
+        log_start_banner(current_version, broker, port, user, topic)
+        
+        client = mqtt.Client()
+        if user and password:
+            client.username_pw_set(user, password)
+            
+        client.on_connect = on_connect
+        client.on_message = on_message
+        client.reconnect_delay_set(min_delay=1, max_delay=60)
+        
+        logging.info(f"Attempting connection to {broker}...")
+        client.connect(broker, port, 60)
+        
+        # Start the loop
+        client.loop_forever()
+        
+    except Exception:
+        logging.error("FATAL ERROR during startup:")
+        logging.error(traceback.format_exc())
+        exit(1)
 
 if __name__ == "__main__":
     main()

@@ -1,26 +1,21 @@
 FROM python:3.12-alpine
 
-# Copy requirements.txt first for better build caching
+# Force logs to show up immediately in HA
+ENV PYTHONUNBUFFERED=1
+
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt [cite: 4]
 
-# Install all Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Set working directory for app
 WORKDIR /app
 
-# Copy Python source files into /app
+# Copy app files 
 COPY app/wols_ca_uploader.py .
 COPY app/mqtt_triggers.py .
 COPY app/public_key_handler.py .
 COPY app/secrets_handler.py .
 
-# Copy config files into /config
-RUN mkdir -p /config
-COPY config/version.yaml /config/version.yaml
-
-# Home Assistant s6-overlay settings
-ENV S6_SERVICES_GRACETIME=0
-ENV S6_READ_ONLY_ROOT=1
+# Move version.yaml to an internal app path to avoid /config mount issues
+RUN mkdir -p /app/internal
+COPY config/version.yaml /app/internal/version.yaml 
 
 ENTRYPOINT ["python", "wols_ca_uploader.py"]

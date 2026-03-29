@@ -1,11 +1,6 @@
 import yaml
 import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-
 SECRETS_FILE = "/config/secrets.yaml"  # Adjust path for your HA setup
 
 def get_secret(name):
