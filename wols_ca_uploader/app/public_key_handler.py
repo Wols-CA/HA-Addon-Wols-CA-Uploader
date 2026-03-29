@@ -27,6 +27,12 @@ def handle_public_key(client, msg):
         # 1.b Convert URL-safe Base64 to Standard Base64
         # This fixes the 'InvalidByte(6, 95)' underscore error
         payload = payload.replace('-', '+').replace('_', '/')
+
+        # 1.c FIX: Add missing Base64 padding
+        # This resolves the 'InvalidPadding' error
+        missing_padding = len(payload) % 4
+        if missing_padding:
+            payload += '=' * (4 - missing_padding)
         
         logging.debug(f"DEBUG: Raw Key Received: |{payload}|")
 
