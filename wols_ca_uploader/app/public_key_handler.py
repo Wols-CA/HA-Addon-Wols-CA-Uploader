@@ -4,7 +4,6 @@ import secrets
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from secrets_handler import get_secret
-from mqtt_triggers import send_encrypted_payload, is_public_key_active, promote_temp_key, refresh_playlists, handle_mqtt_message
 
 # Global key states
 active_public_key = None  # The "Trusted" key
@@ -14,6 +13,8 @@ def handle_public_key(client, msg):
     global temp_public_key, active_public_key
     try:
         logging.info("Handling received public key for handshake...")
+
+        from mqtt_triggers import send_encrypted_payload
 
         # Reset states on a new key attempt
         active_public_key = None
