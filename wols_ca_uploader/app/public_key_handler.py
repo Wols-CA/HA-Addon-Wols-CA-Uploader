@@ -4,6 +4,7 @@ import secrets
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from secrets_handler import get_secret
+from mqtt_triggers import send_encrypted_payload, is_public_key_active, promote_temp_key, refresh_playlists, handle_mqtt_message
 
 # Global key states
 active_public_key = None  # The "Trusted" key
@@ -13,11 +14,28 @@ def handle_public_key(client, msg):
     global temp_public_key, active_public_key
     try:
         logging.info("Handling received public key for handshake...")
+
         # Reset states on a new key attempt
         active_public_key = None
         temp_public_key = None
 
-        payload = msg.payload.decode().strip()
+        # 1. Log the RAW payload to see exactly what arrived
+        # Ensure we use the same variable name throughout
+        payload = msg.payload.decode().strip().replace('"', '') 
+        logging.debug(f"DEBUG: Raw Key Received: |{payload}|")
+
+        # 2. Check and add PEM headers if missing
+        header = "-----BEGIN PUBLIC KEY-----"
+        footer = "-----END PUBLIC KEY-----"
+        
+        if header not in payload:
+            logging.info("PEM headers missing. Adding them automatically.")
+            # Ensure the base64 body is clean of any stray internal headers
+            clean_body = payload.replace(header, "").replace(footer, "").strip()
+            # Reconstruct the full PEM format
+            payload = f"{header}\n{clean_body}\n{footer}"     
+        
+        # 3. Attempt to load the reconstructed key
         new_key = serialization.load_pem_public_key(payload.encode())
         
         if not isinstance(new_key, rsa.RSAPublicKey):
@@ -27,7 +45,6 @@ def handle_public_key(client, msg):
         logging.info("Phase 1: New key placed in probation. Sending password for verification...")
         
         # Local import to avoid circular dependency
-        from mqtt_triggers import send_encrypted_payload
         mqtt_pw = get_secret("mqtt_password")
         
         # Encrypt with the temp_public_key via the helper
@@ -39,7 +56,6 @@ def handle_public_key(client, msg):
         active_public_key = None
         
         # Trigger the "Poison Pill" via the encryption helper
-        from mqtt_triggers import send_encrypted_payload
         send_encrypted_payload(client, "wols-ca/admin/encrypted_password", "FORCE_RESET")
 
 def encrypted_text(topic, plaintext):
