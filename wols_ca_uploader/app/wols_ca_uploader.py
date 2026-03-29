@@ -55,7 +55,7 @@ def get_mqtt_settings():
         logging.error(f"Critical error loading /data/options.json: {e}")
         raise
 
-def on_connect(client, userdata, flags, rc, properties=None):
+def on_connect(client, userdata, flags, reason_code, properties=None):
     if reason_code == 0:
         logging.info("Connected successfully to MQTT broker (API v2).")
         # Subscribe to all relevant topics
@@ -96,7 +96,7 @@ def main():
 
         log_start_banner(current_version, broker, port, user, topic)
         
-        client = mqtt.Client()
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         if user and password:
             client.username_pw_set(user, password)
             
