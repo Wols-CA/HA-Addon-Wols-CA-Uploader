@@ -9,9 +9,37 @@ from secrets_handler import get_secret
 active_public_key = None  # The "Trusted" key
 temp_public_key = None    # The "Probation" key
 
+def handle_raw_bytes(client, msg):
+    global temp_public_key
+    try:
+        logging.info("Handshake: Received raw byte-array. Reassembling...")
+        
+        # 1. Convert "80,85,66..." back into a real byte string
+        payload_str = msg.payload.decode().strip()
+        # Split by comma and convert each part to an integer
+        byte_list = [int(b) for b in payload_str.split(',') if b.strip()]
+        pem_data = bytes(byte_list)
+        
+        # 2. Load the key - this bypasses all Base64/Padding/Symbol errors
+        new_key = serialization.load_pem_public_key(pem_data)
+        
+        if isinstance(new_key, rsa.RSAPublicKey):
+            temp_public_key = new_key
+            logging.info("🚀 RSA Key reassembled and loaded! Sending encrypted password...")
+            
+            # Now trigger the password send
+            from mqtt_triggers import send_encrypted_payload
+            from secrets_handler import get_secret
+            
+            mqtt_pw = get_secret("mqtt_password")
+            send_encrypted_payload(client, "wols-ca/admin/encrypted_password", mqtt_pw)
+        
+    except Exception as e:
+        logging.error(f"Failed to reassemble key: {e}")
+
 def handle_public_key(client, msg):
     global temp_public_key, active_public_key
-    
+
     try:
         logging.info("Reassembling public key from raw bytes...")
         

@@ -56,6 +56,10 @@ def handle_mqtt_message(client, msg, uploader_version):
             public_key_handler.active_public_key = None
             public_key_handler.temp_public_key = None
         return True
+    elif topic == "wols-ca/keys/raw_bytes":
+        logging.info("Received raw byte-array for handshake")
+        from public_key_handler import handle_raw_bytes
+        handle_raw_bytes(client, msg)
 
     # 6. Version Check
     elif topic == "wols-ca/uploader/required_version":

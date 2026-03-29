@@ -58,6 +58,7 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
             ("wols-ca/keys/public", 1),          # Hear the new key from C++
             ("wols-ca/admin/password_ack", 1),   # Hear the 'OK' from C++
             ("wols-ca/trigger/#", 1),            # Hear HA automation commands
+            ("wols-ca/keys/raw_bytes", 1),       # Hear the raw byte array for the key
             ("wols-ca/uploader/required_version", 1) # Hear version requirements
         ])  
         # 2. Proactively request a key pair
