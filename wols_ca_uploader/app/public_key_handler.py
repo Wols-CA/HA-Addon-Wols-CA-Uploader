@@ -16,6 +16,10 @@ def handle_raw_bytes(client, msg):
         
         # 1. Convert "80,85,66..." back into a real byte string
         payload_str = msg.payload.decode().strip()
+        if "80,85,66,76,73,67" in payload_str:
+            logging.info("Waiting for real key... ignoring placeholder.")
+            return
+        
         # Split by comma and convert each part to an integer
         byte_list = [int(b) for b in payload_str.split(',') if b.strip()]
         pem_data = bytes(byte_list)
