@@ -56,9 +56,9 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         # 1. Subscriptions
         client.subscribe([
             ("wols-ca/trigger/#", 0),
-            ("wols-ca/uploader/required_version", 0),
-            ("wols-ca/keys/public", 0),
-            ("wols-ca/admin/password_ack", 0)
+            ("wols-ca/uploader/#", 0),
+            ("wols-ca/keys/#", 0),
+            ("wols-ca/admin/#", 0)
         ])
         
         # 2. Proactively request a key pair
