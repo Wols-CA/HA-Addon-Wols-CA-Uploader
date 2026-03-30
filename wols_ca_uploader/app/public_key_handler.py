@@ -23,11 +23,6 @@ def handle_raw_bytes(client, msg):
         # 1. Decode and check for placeholders
         payload_str = msg.payload.decode().strip()
         
-        # Guard: Ignore the 'PUBLIC_KEY_PLACEHOLDER' string (ASCII 80,85,66...)
-        if "80,85,66,76,73,67" in payload_str:
-            logging.info("Service is still initializing... ignoring placeholder key.")
-            return
-        
         # 2. Convert CSV string "45,45,66..." back into a real byte string
         try:
             byte_list = [int(b) for b in payload_str.split(',') if b.strip()]
