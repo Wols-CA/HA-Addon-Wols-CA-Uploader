@@ -74,15 +74,24 @@ def get_mqtt_settings():
 def on_connect(client, userdata, flags, reason_code, properties=None):
     if reason_code == 0:
         logging.info("Connected successfully to MQTT broker (API v2).")
+        
+        # --- NEW: Immediate Online Status ---
+        online_payload = json.dumps({
+            "status": "online", 
+            "version": current_version, 
+            "timestamp": int(time.time())
+        })
+        client.publish("wols-ca/uploader/status", online_payload, qos=1, retain=True)
 
         # 1. Subscriptions
         client.subscribe([
-            ("wols-ca/keys/public", 1),          # Hear the new key from C++
-            ("wols-ca/admin/password_ack", 1),   # Hear the 'OK' from C++
-            ("wols-ca/trigger/#", 1),            # Hear HA automation commands
-            ("wols-ca/keys/raw_bytes", 1),       # Hear the raw byte array for the key
-            ("wols-ca/uploader/required_version", 1) # Hear version requirements
+            ("wols-ca/keys/public", 1),
+            ("wols-ca/admin/password_ack", 1),
+            ("wols-ca/trigger/#", 1),
+            ("wols-ca/keys/raw_bytes", 1),
+            ("wols-ca/uploader/required_version", 1)
         ])  
+        
         # 2. Proactively request a key pair
         client.publish("wols-ca/admin/request_key", "STARTUP_SYNC")
 
