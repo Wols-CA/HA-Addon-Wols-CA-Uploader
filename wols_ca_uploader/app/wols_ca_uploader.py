@@ -1,5 +1,7 @@
 import sys
 import logging
+import threading  # <--- RE-ADDED
+import time       # <--- RE-ADDED
 
 # 1. ENFORCE VERSION AT THE TOP
 if sys.version_info < (3, 12):
@@ -23,6 +25,26 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
+
+# --- NEW HEARTBEAT FUNCTION ---
+def start_heartbeat(client, interval=60):
+    def heartbeat():
+        logging.info("Heartbeat thread started.")
+        while True:
+            if client.is_connected():
+                try:
+                    payload = json.dumps({
+                        "status": "online",
+                        "version": current_version,
+                        "timestamp": int(time.time())
+                    })
+                    client.publish("wols-ca/uploader/status", payload, qos=1, retain=True)
+                except Exception as e:
+                    logging.error(f"Heartbeat publish failed: {e}")
+            time.sleep(interval)
+    
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    thread.start()
 
 def get_version_from_yaml():
     version_file = "/app/internal/version.yaml"
@@ -91,27 +113,32 @@ def log_start_banner(version, broker, port, user, topic):
 
 def main():
     global current_version
-    # REMOVED: active_public_key/temp_public_key local definitions here.
-    # These are handled globally within public_key_handler.py.
-
     try:
         current_version = get_version_from_yaml()
         broker, port, user, password, topic = get_mqtt_settings()
 
         log_start_banner(current_version, broker, port, user, topic)
         
-        # Using CallbackAPIVersion.VERSION2 for paho-mqtt 2.x
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         
         if user and password:
             client.username_pw_set(user, password)
             
+        # --- RE-ADDED: LAST WILL AND TESTAMENT ---
+        # This ensures HA/C++ sees 'offline' if the docker container stops
+        death_payload = json.dumps({"status": "offline", "version": current_version})
+        client.will_set("wols-ca/uploader/status", payload=death_payload, qos=1, retain=True)
+
         client.on_connect = on_connect
         client.on_message = on_message
         client.reconnect_delay_set(min_delay=1, max_delay=60)
         
         logging.info(f"Attempting connection to {broker}...")
         client.connect(broker, port, 60)
+
+        # --- RE-ADDED: START HEARTBEAT ---
+        start_heartbeat(client) 
+        
         client.loop_forever()
         
     except Exception:
