@@ -9,6 +9,39 @@ from public_key_handler import (
 import public_key_handler 
 from packaging.version import parse
 
+active_mqtt_user = None
+active_mqtt_password = None
+
+def load_mqtt_credentials():
+    global active_mqtt_user, active_mqtt_password
+    active_mqtt_user = get_setting("mqtt_username") 
+    active_mqtt_password = get_setting("mqtt_password")
+    if not active_mqtt_password:
+        active_mqtt_password = get_secret("mqtt_password")
+    else:
+        logging.info("MQTT password not found in settings...")
+
+def set_mqtt_credentials(user, password):
+    global active_mqtt_user, active_mqtt_password
+    active_mqtt_user = user
+    active_mqtt_password = password
+
+def get_MQTT_UserID():
+    global active_mqtt_user
+    if active_mqtt_user:
+        return active_mqtt_user
+    else:
+        logging.warning("MQTT UserID requested but no active key. Returning None.")
+        return None
+    
+def get_MQTT_Password():
+    global active_mqtt_password
+    if active_mqtt_password:
+        return active_mqtt_password
+    else:
+        logging.warning("MQTT Password requested but no active key. Returning None.")
+        return None
+
 def handle_mqtt_message(client, msg, uploader_version):
     topic = msg.topic
     try:
@@ -41,7 +74,7 @@ def handle_mqtt_message(client, msg, uploader_version):
     # 3. RSA Public Key Handshake (Consolidated)
     elif topic in ["wols-ca/keys/public", "wols-ca/keys/raw_bytes"]:
         # handle_raw_bytes now handles the CSV reassembly and sends the password
-        handle_raw_bytes(client, msg)
+        handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password)
         return True
 
     # 4. Password Acknowledgment (Handshake Finalization)

@@ -1,6 +1,7 @@
 import base64
 import logging
 import secrets
+import json
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from secrets_handler import get_secret
@@ -9,10 +10,15 @@ from secrets_handler import get_secret
 active_public_key = None  # The "Trusted" key (used for secrets)
 temp_public_key = None    # The "Probation" key (waiting for password_ack)
 
-def handle_raw_bytes(client, msg):
+import json
+import logging
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+def handle_raw_bytes(client, msg, active user, active password):
     """
     Main entry point for RSA Public Key delivery.
-    Reassembles the byte-array, loads the RSA object, and sends the encrypted password.
+    Reassembles the byte-array, loads the RSA object, and sends the encrypted JSON credentials.
     """
     global temp_public_key
     topic = msg.topic
@@ -32,21 +38,25 @@ def handle_raw_bytes(client, msg):
             return
 
         # 3. Load the RSA Key directly from PEM bytes
-        # This bypasses all Base64/Symbol encoding issues
         new_key = serialization.load_pem_public_key(pem_data)
         
         if isinstance(new_key, rsa.RSAPublicKey):
             temp_public_key = new_key
-            logging.info("🚀 RSA Key loaded successfully! Initiating password verification...")
+            logging.info("🚀 RSA Key loaded successfully! Initiating credential verification...")
             
-            # 4. Fetch the MQTT password from secrets.yaml
-            mqtt_pw = get_secret("mqtt_password")
-            
-            if mqtt_pw:
-                # 5. Encrypt password with the NEW key and send to C++ backend
-                send_encrypted_payload(client, "wols-ca/admin/encrypted_password", mqtt_pw)
+            # 4. Package the already-resolved credentials into a JSON object
+            if active_mqtt_user and active_mqtt_password:
+                credentials_payload = {
+                    "user_id": active_mqtt_user,
+                    "password": active_mqtt_password
+                }
+                json_string = json.dumps(credentials_payload)
+                
+                # 5. Encrypt the JSON string with the NEW key and send to backend
+                logging.info("Sending encrypted JSON credentials to backend...")
+                send_encrypted_payload(client, "wols-ca/admin/encrypted_credentials", json_string)
             else:
-                logging.error("Could not find 'mqtt_password' in secrets.yaml. Handshake stalled.")
+                logging.error("Active credentials are missing. Cannot send handshake response.")
         else:
             logging.error("Received key is not a valid RSA Public Key.")
 

@@ -14,7 +14,10 @@ import yaml
 import json
 import traceback
 
-from mqtt_triggers import handle_mqtt_message
+from mqtt_triggers import handle_mqtt_message, set_mqtt_credentials
+from secrets_handler import get_secret
+
+
 # Note: We don't need to import active_public_key here anymore 
 # because mqtt_triggers and public_key_handler handle the logic.
 
@@ -66,6 +69,15 @@ def get_mqtt_settings():
         user = data.get("mqtt_user", None)
         password = data.get("mqtt_password", None)
         topic = data.get("mqtt_topic", None)
+
+        # --- NEW: Fallback Logic ---
+        if not password:
+            logging.info("MQTT password empty in options.json. Loading from secrets.yaml...")
+            password = get_secret("mqtt_password")
+        else:
+            logging.info("MQTT password loaded directly from options.json.")
+
+        set_mqtt_credentials(user, password)
         return broker, port, user, password, topic
     except Exception as e:
         logging.error(f"Critical error loading /data/options.json: {e}")
