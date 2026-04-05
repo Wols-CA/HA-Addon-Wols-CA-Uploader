@@ -15,7 +15,7 @@ import logging
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-def handle_raw_bytes(client, msg, active user, active password):
+def handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password):
     """
     Main entry point for RSA Public Key delivery.
     Reassembles the byte-array, loads the RSA object, and sends the encrypted JSON credentials.
