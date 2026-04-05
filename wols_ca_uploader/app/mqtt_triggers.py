@@ -87,7 +87,7 @@ class MQTTMessageRouter:
             handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password)
             
         elif topic == "wols-ca/admin/password_ack":
-            if payload == "OK":
+            if payload == "ACK":
                 logging.info("🚀 HANDSHAKE SUCCESS: Backend verified the credentials.")
                 promote_temp_key()
                 
@@ -97,7 +97,7 @@ class MQTTMessageRouter:
                     ("wols-ca/trigger/#", 1),
                     ("spotify/+/Admin/Secrets/#", 1) 
                 ])
-            else:
+            elif payload == "NACK"  :
                 logging.error("❌ Handshake REJECTED: Backend did not accept the credentials.")
                 public_key_handler.active_public_key = None
                 public_key_handler.temp_public_key = None
@@ -107,7 +107,8 @@ class MQTTMessageRouter:
                     "wols-ca/trigger/#",
                     "spotify/+/Admin/Secrets/#"
                 ])
-
+            else:
+                logging.error(f"❌ Handshake Unexpected response: Unknown payload '{payload}' received.")
     def _handle_secrets_pickup(self, client, topic, payload):
         # Ignore completely empty payloads
         if not payload:
