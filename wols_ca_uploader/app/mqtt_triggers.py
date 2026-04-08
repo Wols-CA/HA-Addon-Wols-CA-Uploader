@@ -1,6 +1,7 @@
 import json
 import logging
 import threading
+import os
 from packaging.version import parse
 
 # Local imports
@@ -13,27 +14,96 @@ from public_key_handler import (
 )
 import public_key_handler 
 
-# Global credentials memory
 active_mqtt_user = None
 active_mqtt_password = None
+# Bewaar de laatst verzonden config om te kunnen vergelijken
+last_sent_config = {}
 
 def set_mqtt_credentials(user, password):
     global active_mqtt_user, active_mqtt_password
     active_mqtt_user = user
     active_mqtt_password = password
 
+# --- STANDALONE DASHBOARD DISCOVERY ---
+def publish_dashboard_discovery(client):
+    """Maakt automatisch invulvelden aan in Home Assistant via MQTT Discovery"""
+    device_info = {
+        "identifiers": ["wols_ca_vault"],
+        "name": "Wols-CA Configuration Vault",
+        "manufacturer": "Wols"
+    }
+
+    # Haal configuratie op 
+    options_file = "/data/options.json"
+    options = {}
+    if os.path.exists(options_file):
+        with open(options_file, "r") as f:
+            options = json.load(f)
+
+    spotify_sets = int(options.get("PlaylistSets", 0))
+    seawater_num = int(options.get("SeaWaterNumber", 0))
+
+    # 1. Maak de velden voor Spotify (max 24)
+    for i in range(1, spotify_sets + 1):
+        fields = {
+            f"SourceID{i}": "mdi:spotify",
+            f"TargetID{i}": "mdi:playlist-music",
+            f"PlayTime{i}": "mdi:clock"
+        }
+        for secret_name, icon in fields.items():
+            topic = f"homeassistant/text/wols_ca/{secret_name}/config"
+            payload = {
+                "name": f"Spotify {secret_name}",
+                "unique_id": f"wols_ca_{secret_name}",
+                "icon": icon,
+                "command_topic": f"wols-ca/admin/set_secret/{secret_name}",
+                "state_topic": f"wols-ca/admin/state/{secret_name}",
+                "device": device_info
+            }
+            client.publish(topic, json.dumps(payload), retain=True)
+            current_val = get_secret(secret_name) or ""
+            client.publish(f"wols-ca/admin/state/{secret_name}", current_val, retain=True)
+
+    # 2. Maak de velden voor SeaWater (max 100)
+    for i in range(1, seawater_num + 1):
+        secret_name = f"Position{i}"
+        topic = f"homeassistant/text/wols_ca/{secret_name}/config"
+        payload = {
+            "name": f"SeaWater {secret_name}",
+            "unique_id": f"wols_ca_{secret_name}",
+            "icon": "mdi:map-marker",
+            "command_topic": f"wols-ca/admin/set_secret/{secret_name}",
+            "state_topic": f"wols-ca/admin/state/{secret_name}",
+            "device": device_info
+        }
+        client.publish(topic, json.dumps(payload), retain=True)
+        current_val = get_secret(secret_name) or ""
+        client.publish(f"wols-ca/admin/state/{secret_name}", current_val, retain=True)
+
+    # 3. Maak Reload en Factory Reset knoppen aan
+    buttons = {
+        "SpotifyReload": ("wols-ca/admin/command/SpotifyReload", "mdi:reload"),
+        "SpotifyReset": ("wols-ca/admin/command/SpotifyReset", "mdi:delete-alert"),
+        "SeaWaterReload": ("wols-ca/admin/command/SeaWaterReload", "mdi:reload"),
+        "SeaWaterReset": ("wols-ca/admin/command/SeaWaterReset", "mdi:delete-alert")
+    }
+    for btn_name, (cmd_topic, icon) in buttons.items():
+        payload = {
+            "name": btn_name,
+            "unique_id": f"wols_ca_btn_{btn_name}",
+            "icon": icon,
+            "command_topic": cmd_topic,
+            "payload_press": "PRESS",
+            "device": device_info
+        }
+        client.publish(f"homeassistant/button/wols_ca/{btn_name}/config", json.dumps(payload), retain=True)
 
 class MQTTMessageRouter:
-    """
-    Routes incoming MQTT messages to their specific domain handlers.
-    Spawns threads for long-running tasks to prevent blocking the MQTT network loop.
-    """
     def __init__(self, uploader_version):
         self.uploader_version = uploader_version
 
     def route_message(self, client, msg):
         topic = msg.topic
-        
         try:
             payload = msg.payload.decode().strip()
         except UnicodeDecodeError:
@@ -55,18 +125,49 @@ class MQTTMessageRouter:
             self._handle_secret_request(client, topic)
             return True
 
-        # 4. Routing: Heavy Triggers (Threaded)
-        elif topic == "wols-ca/trigger/refresh_playlists":
-            logging.info("Spawning background thread for playlist refresh...")
-            threading.Thread(target=self._threaded_playlist_refresh, daemon=True).start()
+        # 4. Routing: Dashboard Updates
+        elif topic.startswith("wols-ca/admin/set_secret/"):
+            secret_name = topic.split("/")[-1] 
+            update_secret(secret_name, payload)
+            logging.info(f"Secret bijgewerkt vanuit HA UI: {secret_name}")
+            client.publish(f"wols-ca/admin/state/{secret_name}", payload, retain=True)
+            return True   
+
+        # 5. Routing: Commands (Reload / Factory Reset)
+        elif topic.startswith("wols-ca/admin/command/"):
+            command = topic.split("/")[-1]
+            
+            if command == "SpotifyReload":
+                logging.info("Manual reload requested for Spotify.")
+                self._send_spotify_details(client)
+                
+            elif command == "SeaWaterReload":
+                logging.info("Manual reload requested for Sea Water.")
+                self._send_seawater_details(client)
+                
+            elif command == "SpotifyReset":
+                logging.warning("FACTORY RESET TRIGGERED FOR SPOTIFY!")
+                for i in range(1, 25):
+                    for field in [f"SourceID{i}", f"TargetID{i}", f"PlayTime{i}"]:
+                        update_secret(field, "")
+                        client.publish(f"wols-ca/admin/state/{field}", "", retain=True)
+                # Stuur lege config naar C++
+                self._send_spotify_details(client, force_empty=True)
+
+            elif command == "SeaWaterReset":
+                logging.warning("FACTORY RESET TRIGGERED FOR SEA WATER!")
+                for i in range(1, 101):
+                    update_secret(f"Position{i}", "")
+                    client.publish(f"wols-ca/admin/state/Position{i}", "", retain=True)
+                # Stuur lege config naar C++
+                self._send_seawater_details(client, force_empty=True)
             return True
 
-        # 5. Routing: System & Version Control
+        # 6. Routing: System & Version Control
         elif topic == "wols-ca/uploader/required_version":
             self._handle_version_check(payload)
             return True
             
-        # Ignore known outbound topics
         elif topic in [
             "wols-ca/uploader/version", 
             "wols-ca/uploader/status", 
@@ -77,10 +178,6 @@ class MQTTMessageRouter:
 
         return False
 
-    # ----------------------------------------------------------------
-    # Domain-Specific Handlers
-    # ----------------------------------------------------------------
-
     def _handle_handshake(self, client, topic, payload, msg):
         if topic in ["wols-ca/keys/public", "wols-ca/keys/raw_bytes"]:
             global active_mqtt_user, active_mqtt_password
@@ -90,127 +187,183 @@ class MQTTMessageRouter:
             if payload == "ACK":
                 logging.info("🚀 HANDSHAKE SUCCESS: Backend verified the credentials.")
                 promote_temp_key()
-                
-                # Elevate privileges: Subscribe to operational topics
-                logging.info("🔓 Handshake verified. Subscribing to operational and secret topics...")
                 client.subscribe([
                     ("wols-ca/trigger/#", 1),
-                    ("spotify/+/Admin/Secrets/#", 1) 
+                    ("spotify/+/Admin/Secrets/#", 1),
+                    ("wols-ca/admin/command/#", 1),
+                    ("wols-ca/admin/set_secret/#", 1)
                 ])
-            elif payload == "NACK"  :
-                logging.error("❌ Handshake REJECTED: Backend did not accept the credentials.")
+                
+                # PUSH: Stuur direct alle configuraties ongevraagd naar C++
+                logging.info("Pushing configuration to C++ Service...")
+                self._send_ha_service_settings(client)
+                self._send_spotify_details(client)
+                self._send_seawater_details(client)
+
+            elif payload == "NACK":
+                logging.error("❌ Handshake REJECTED")
                 public_key_handler.active_public_key = None
                 public_key_handler.temp_public_key = None
-                
-                # Revoke privileges
-                client.unsubscribe([
-                    "wols-ca/trigger/#",
-                    "spotify/+/Admin/Secrets/#"
-                ])
-            else:
-                logging.error(f"❌ Handshake Unexpected response: Unknown payload '{payload}' received.")
+
     def _handle_secrets_pickup(self, client, topic, payload):
-        # Ignore completely empty payloads
         if not payload:
             return 
-            
         try:
             data = json.loads(payload)
             secret_value = data.get("current_value", "")
-            
-            # 1. Prevent loops: Ignore empty strings and our own masking text
             if not secret_value or secret_value == "Stored by Uploader":
                 return
                 
-            # 2. Extract the secret name (e.g., "SpotifyClientSecret") from the topic
             secret_name = topic.split("/")[-1]
-            
-            # 3. Store the secret securely in secrets.yaml without asking questions
             if update_secret(secret_name, secret_value):
-                logging.info(f"🔐 Secret '{secret_name}' picked up from MQTT and securely stored.")
-                
-                # 4. Mask the topic: Clear the plaintext password from the broker
-                # and provide visual feedback in the HA dashboard.
                 feedback = json.dumps({
                     "current_value": "Stored by Uploader",
                     "purpose": data.get("purpose", ""),
-                    "remark": "Secret has been securely moved to internal storage."
+                    "remark": "Secret securely moved."
                 })
                 client.publish(topic, feedback, qos=1, retain=True)
                 
-                # 5. Handle the special case for MQTT Password auto-healing
                 if secret_name == "MQTTPassword":
                     global active_mqtt_password
                     active_mqtt_password = secret_value
-                    logging.info("New MQTT Password loaded. Requesting new RSA key to trigger C++ connection test...")
                     client.publish("wols-ca/admin/request_key", "STARTUP_SYNC", qos=1)
-                    
         except json.JSONDecodeError:
-            logging.error(f"Malformed JSON payload on secret topic: {topic}")
-    
+            pass
+
     def _handle_secret_request(self, client, topic):
-        secret_name = topic.split("/")[-1]
-        
+        request_type = topic.split("/")[-1] 
         if not is_public_key_active():
-            logging.warning(f"Blocked request for {secret_name}: Handshake not active.")
-            send_encrypted_payload(client, f"wols-ca/secrets/response/{secret_name}", "NO_ACTIVE_KEY")
+            logging.warning(f"Request {request_type} Refused: No active RSA key.")
             return
+
+        if request_type == "HAServiceSettings":
+            self._send_ha_service_settings(client)
+        elif request_type == "SpotifyDetails":
+            self._send_spotify_details(client)
+        elif request_type == "SeaWaterDetails":
+            self._send_seawater_details(client)
+
+    # --- PUSH FUNCTIONS ---
+    def _send_ha_service_settings(self, client):
+        options_file = "/data/options.json"
+        options = {}
+        if os.path.exists(options_file):
+            with open(options_file, "r") as f:
+                options = json.load(f)
+                
+        data = {
+            "BrokerURL": options.get("mqtt_broker", ""),
+            "MqttUser": active_mqtt_user,
+            "MqttPassword": active_mqtt_password,
+            "ConsoleToMqtt": options.get("ConsoleToMqtt", False),
+            "LogModus": options.get("LogModus", "INFO"),
+            "RefreshMinutes": options.get("RefreshMinutes", 45),
+            "TimeZone": options.get("TimeZone", "Europe/Amsterdam"),
+            "ApiWhitelist": options.get("ApiWhitelist", "127.0.0.1")
+        }
+        self._send_config_response(client, "HAServiceSettings", data)
+
+    def upload_to_cpp_service(self, client,new_config):
+        global last_sent_config
+        
+        # Check of we een 'snelle' update kunnen doen
+        is_token_refresh = False
+        
+        if last_sent_config:
+            # Maak een kopie zonder de token om de rest te vergelijken
+            current_data_no_token = {k: v for k, v in new_config.items() if k != 'access_token'}
+            last_data_no_token = {k: v for k, v in last_sent_config.items() if k != 'access_token'}
             
-        secret = get_secret(secret_name)
-        if secret:
-            send_encrypted_payload(client, f"wols-ca/secrets/response/{secret_name}", secret)
+            # Als de rest hetzelfde is, maar de token is anders
+            if current_data_no_token == last_data_no_token and new_config.get('access_token') != last_sent_config.get('access_token'):
+                is_token_refresh = True
+
+        # Voeg de hint toe voor de C++ service
+        payload = new_config.copy()
+        if is_token_refresh:
+            payload['AccessTokenOnly'] = True
         else:
-            logging.warning(f"Secret '{secret_name}' not found.")
+            payload['AccessTokenOnly'] = False
 
-    def _handle_version_check(self, required):
-        if self._compare_versions(self.uploader_version, required):
-            logging.warning(f"Version too low: {self.uploader_version} (Required: {required})")
-        else:
-            logging.info(f"Version check passed: {self.uploader_version}")
+        # Verstuur de JSON naar de C++ service (via MQTT of HTTP)
+        self._send_config_response(client, "SpotifyDetails", payload)
+        
+        # Update de 'laatste' staat
+        last_sent_config = new_config
 
-    # ----------------------------------------------------------------
-    # Threaded Tasks
-    # ----------------------------------------------------------------
+    def _send_spotify_details(self, client, force_empty=False):
+        playlist_sets = []
+        enabled = False
+        
+        options_file = "/data/options.json"
+        options = {}
+        if os.path.exists(options_file):
+            with open(options_file, "r") as f:
+                options = json.load(f)
 
-    def _threaded_playlist_refresh(self):
-        """Runs in a separate thread to avoid blocking the MQTT loop."""
-        try:
-            logging.info("Starting Spotify playlist refresh...")
-            # Execute your long-running Spotify logic here
-            # refresh_playlists()
-            logging.info("Spotify playlist refresh complete.")
-        except Exception as e:
-            logging.error(f"Error during threaded playlist refresh: {e}")
+        if not force_empty:
+            enabled = options.get("SpotifyEnabled", False)
+            max_sets = int(options.get("PlaylistSets", 0))
+            for i in range(1, max_sets + 1):
+                source = get_secret(f"SourceID{i}")
+                target = get_secret(f"TargetID{i}")
+                if not source or not target: break 
+                
+                playlist_sets.append({
+                    "source": source,
+                    "target": target,
+                    "play_time": get_secret(f"PlayTime{i}")
+                })
+        
+        data = {
+            "Enabled": enabled,
+            "Automate": options.get("SpotifyAutomate", False),
+            "ClientID": get_secret("SpotifyClientID") if not force_empty else "",
+            "ClientSecret": get_secret("ClientIDSecret") if not force_empty else "",
+            "Sets": playlist_sets
+        }
+        upload_to_cpp_service( client, data)
+        
 
-    # ----------------------------------------------------------------
-    # Helpers
-    # ----------------------------------------------------------------
+    def _send_seawater_details(self, client, force_empty=False):
+        positions = []
+        enabled = False
+        interval = 30
+        
+        options_file = "/data/options.json"
+        options = {}
+        if os.path.exists(options_file):
+            with open(options_file, "r") as f:
+                options = json.load(f)
 
-    def _compare_versions(self, current, required):
-        try:
-            return parse(current) < parse(required)
-        except Exception as e:
-            logging.error(f"Version comparison error: {e}")
-            return False
+        if not force_empty:
+            enabled = options.get("SeaWaterEnabled", False)
+            interval = int(options.get("SensorInterval", 30))
+            max_pos = int(options.get("SeaWaterNumber", 0))
+            for i in range(1, max_pos + 1):
+                pos = get_secret(f"Position{i}")
+                if not pos: break
+                positions.append(pos)
 
+        data = {
+            "Enabled": enabled,
+            "SensorInterval": max(5, min(60, interval)),
+            "Positions": positions
+        }
+        self._send_config_response(client, "SeaWaterDetails", data)
 
-# --- Backward compatibility wrapper for wols_ca_uploader.py ---
-# This allows you to keep your existing wols_ca_uploader.py code unchanged
+    def _send_config_response(self, client, detail_type, data):
+        payload = json.dumps(data)
+        topic = f"wols-ca/config/response/{detail_type}"
+        send_encrypted_payload(client, topic, payload)
+        logging.info(f"🚀 Gegevens voor {detail_type} encrypted verzonden naar C++ service.")
+
+    def _handle_version_check(self, payload):
+        pass
+
 _router_instance = None
-
 def handle_mqtt_message(client, msg, uploader_version):
     global _router_instance
     if _router_instance is None:
         _router_instance = MQTTMessageRouter(uploader_version)
     return _router_instance.route_message(client, msg)
-
-# ----------------------------------------------------------------
-# Standalone Functions
-# ----------------------------------------------------------------
-
-def refresh_playlists():
-    """Placeholder for Spotify playlist logic."""
-    logging.info("Refreshing Spotify playlists...")
-    # Add your actual heavy API calls or script logic here!
-
-    # --- Backward compatibility wrapper for wols_ca_uploader.py ---

@@ -1,7 +1,8 @@
 import sys
 import logging
-import threading  # <--- RE-ADDED
-import time       # <--- RE-ADDED
+import threading
+import time
+import os
 
 # 1. ENFORCE VERSION AT THE TOP
 if sys.version_info < (3, 12):
@@ -14,12 +15,8 @@ import yaml
 import json
 import traceback
 
-from mqtt_triggers import handle_mqtt_message, set_mqtt_credentials
+from mqtt_triggers import handle_mqtt_message, set_mqtt_credentials, publish_dashboard_discovery
 from secrets_handler import get_secret
-
-
-# Note: We don't need to import active_public_key here anymore 
-# because mqtt_triggers and public_key_handler handle the logic.
 
 # Global variable to hold the version across callbacks
 current_version = "Unknown"
@@ -29,25 +26,18 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-# --- NEW HEARTBEAT FUNCTION ---
 def start_heartbeat(client, interval=60):
     def heartbeat():
-        logging.info("Heartbeat thread started.")
         while True:
             if client.is_connected():
-                try:
-                    payload = json.dumps({
-                        "status": "online",
-                        "version": current_version,
-                        "timestamp": int(time.time())
-                    })
-                    client.publish("wols-ca/uploader/status", payload, qos=1, retain=True)
-                except Exception as e:
-                    logging.error(f"Heartbeat publish failed: {e}")
+                payload = json.dumps({
+                    "status": "online",
+                    "timestamp": int(time.time()),
+                    "version": current_version
+                })
+                client.publish("wols-ca/uploader/status", payload, qos=1, retain=True)
             time.sleep(interval)
-    
-    thread = threading.Thread(target=heartbeat, daemon=True)
-    thread.start()
+    threading.Thread(target=heartbeat, daemon=True).start()
 
 def get_version_from_yaml():
     version_file = "/app/internal/version.yaml"
@@ -70,7 +60,6 @@ def get_mqtt_settings():
         password = data.get("mqtt_password", None)
         topic = data.get("mqtt_topic", None)
 
-        # --- NEW: Fallback Logic ---
         if not password:
             logging.info("MQTT password empty in options.json. Loading from secrets.yaml...")
             password = get_secret("mqtt_password")
@@ -87,7 +76,6 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     if reason_code == 0:
         logging.info("Connected successfully to MQTT broker (API v2).")
         
-        # --- NEW: Immediate Online Status ---
         online_payload = json.dumps({
             "status": "online", 
             "version": current_version, 
@@ -95,25 +83,25 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         })
         client.publish("wols-ca/uploader/status", online_payload, qos=1, retain=True)
 
-        # 1. Subscriptions
         client.subscribe([
             ("wols-ca/keys/public", 1),
             ("wols-ca/admin/password_ack", 1),
             ("wols-ca/trigger/#", 1),
             ("wols-ca/keys/raw_bytes", 1),
-            ("wols-ca/uploader/required_version", 1)
+            ("wols-ca/uploader/required_version", 1),
+            ("wols-ca/admin/command/#", 1),
+            ("wols-ca/admin/set_secret/#", 1)
         ])  
         
-        # 2. Proactively request a key pair
         client.publish("wols-ca/admin/request_key", "STARTUP_SYNC")
-
-        # 3. Publish current version
         publish_version(client, current_version)
+        
+        # --- HIER WORDT HET DASHBOARD GEBOUWD BIJ OPSTARTEN ---
+        publish_dashboard_discovery(client)
     else:
         logging.error(f"Connection failed with result code {reason_code}")
 
 def on_message(client, userdata, msg):
-    # Pass off to our trigger handler
     if not handle_mqtt_message(client, msg, current_version):
         logging.debug(f"No specific handler for topic: {msg.topic}")
 
@@ -145,8 +133,6 @@ def main():
         if user and password:
             client.username_pw_set(user, password)
             
-        # --- RE-ADDED: LAST WILL AND TESTAMENT ---
-        # This ensures HA/C++ sees 'offline' if the docker container stops
         death_payload = json.dumps({"status": "offline", "version": current_version})
         client.will_set("wols-ca/uploader/status", payload=death_payload, qos=1, retain=True)
 
@@ -157,7 +143,6 @@ def main():
         logging.info(f"Attempting connection to {broker}...")
         client.connect(broker, port, 60)
 
-        # --- RE-ADDED: START HEARTBEAT ---
         start_heartbeat(client) 
         
         client.loop_forever()

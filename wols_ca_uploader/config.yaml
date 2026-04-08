@@ -1,23 +1,44 @@
 name: "Wols-CA MQTT Automation Uploader"
-version: "1.4.9"
+version: "0.1.0"
 slug: "wols_ca_uploader"
-description: "Uploads automations to HA via MQTT for Wols-CA services"
+description: "Secure Vault and Uploader for Wols-CA C++ services"
 arch:
   - aarch64
   - amd64
 startup: application
 boot: auto
 options:
-  mqtt_broker: "192.168.101.240"
+  mqtt_broker: ""
   mqtt_port: 1883
-  mqtt_user: "wols-ca-admin"
+  mqtt_user: ""
   mqtt_password: ""
-  mqtt_topic: "wols-ca/admin/automation_upload"
+  mqtt_topic: ""
+  ConsoleToMqtt: false
+  LogModus: "INFO"
+  RefreshMinutes: 45
+  TimeZone: "Europe/Amsterdam"
+  ApiWhitelist: "127.0.0.1, ::1"
+  SpotifyEnabled: false
+  SpotifyAutomate: false
+  PlaylistSets: 0
+  SeaWaterEnabled: false
+  SeaWaterNumber: 0
+  SensorInterval: 30
 schema:
   mqtt_broker: str
   mqtt_port: int
   mqtt_user: str?
-  mqtt_password: str?
+  mqtt_password: password?
   mqtt_topic: str
+  ConsoleToMqtt: bool
+  LogModus: match(^(NOLOG|WARNING|ERROR|DEBUG|INFO)$)
+  RefreshMinutes: int(40,55)
+  TimeZone: str
+  SpotifyEnabled: bool
+  SpotifyAutomate: bool
+  PlaylistSets: int(0,24)
+  SeaWaterEnabled: bool
+  SeaWaterNumber: int(0,100)
+  SensorInterval: int(5,60)
 map:
-     - config:rw
+  - config:rw
