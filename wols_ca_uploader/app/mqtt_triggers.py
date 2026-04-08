@@ -352,14 +352,51 @@ class MQTTMessageRouter:
         }
         self._send_config_response(client, "SeaWaterDetails", data)
 
-    def _send_config_response(self, client, detail_type, data):
-        payload = json.dumps(data)
-        topic = f"wols-ca/config/response/{detail_type}"
-        send_encrypted_payload(client, topic, payload)
-        logging.info(f"🚀 Gegevens voor {detail_type} encrypted verzonden naar C++ service.")
+def _send_config_response(self, client, key, data):
+    # Haal de ID op
+    service_id = self.options.get("WolsCA_ServiceID", "").strip()
+    
+    # CHECK: Is de ID leeg of niet ingesteld?
+    if not service_id:
+        # We doen niets en loggen de fout
+        self.logger.error("Error: WolsCA_ServiceID is not configured in the options!")
+        return
 
-    def _handle_version_check(self, payload):
-        pass
+    # Als het niet leeg is, gaan we verder
+    base_prefix = "WolsCA/ServiceInstance"
+    topic = f"{base_prefix}/{service_id}/Config/{key}"
+    
+    client.publish(topic, json.dumps(data), retain=True)
+    # Log: "Config gepusht naar WolsCA Service op host: master-hub-woonkamer"
+
+def _handle_version_check(self, payload):
+    """
+    Verwerkt inkomende versie-informatie van de C++ service.
+    """
+    # 1. Haal de ServiceID op om te valideren
+    service_id = self.options.get("WolsCA_ServiceID", "").strip()
+    
+    # 2. Safety check: als we geen ID hebben, doen we niets
+    if not service_id:
+        self.logger.error("Versiecheck afgebroken: WolsCA_ServiceID is leeg.")
+        return
+
+    try:
+        data = json.loads(payload)
+        
+        # 3. Check of de payload wel voor ons bedoeld is (optioneel, maar veilig)
+        incoming_id = data.get("service_id", "")
+        if incoming_id and incoming_id != service_id:
+            return # Bericht is voor een andere instantie, negeer het
+
+        version = data.get("version", "Onbekend")
+        status = data.get("status", "Online")
+
+        # 4. Log de status van de specifieke service-host
+        self.logger.info(f"WolsCA Service [{service_id}] is {status}. Versie: {version}")
+        
+    except json.JSONDecodeError:
+        self.logger.error("Versiecheck: Ontvangen payload is geen geldige JSON.")
 
 _router_instance = None
 def handle_mqtt_message(client, msg, uploader_version):
