@@ -18,25 +18,17 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 def handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password):
     """
     Main entry point for RSA Public Key delivery.
-    Reassembles the byte-array, loads the RSA object, and sends the encrypted JSON credentials.
+    Loads the RSA object directly from the PEM string and sends the encrypted JSON credentials.
     """
     global temp_public_key
     topic = msg.topic
     
     try:
-        logging.info(f"Handshake: Received key data from {topic}. Reassembling...")
+        logging.info(f"Handshake: Received key data from {topic}.")
         
-        # 1. Decode and check for placeholders
-        payload_str = msg.payload.decode().strip()
+        # De payload is al een PEM format string, dus we kunnen het direct inladen
+        pem_data = msg.payload
         
-        # 2. Convert CSV string "45,45,66..." back into a real byte string
-        try:
-            byte_list = [int(b) for b in payload_str.split(',') if b.strip()]
-            pem_data = bytes(byte_list)
-        except ValueError as ve:
-            logging.error(f"Malformed byte-array string: {ve}")
-            return
-
         # 3. Load the RSA Key directly from PEM bytes
         new_key = serialization.load_pem_public_key(pem_data)
         
@@ -44,7 +36,7 @@ def handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password):
             temp_public_key = new_key
             logging.info("🚀 RSA Key loaded successfully! Initiating credential verification...")
             
-            # 4. Package the already-resolved credentials into a JSON object
+            # 4. Package the credentials
             if active_mqtt_user and active_mqtt_password:
                 credentials_payload = {
                     "user_id": active_mqtt_user,
@@ -52,7 +44,7 @@ def handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password):
                 }
                 json_string = json.dumps(credentials_payload)
                 
-                # 5. Encrypt the JSON string with the NEW key and send to backend
+                # 5. Encrypt and send
                 logging.info("Sending encrypted JSON credentials to backend...")
                 send_encrypted_payload(client, "wols-ca/admin/encrypted_credentials", json_string)
             else:

@@ -16,7 +16,6 @@ import public_key_handler
 
 active_mqtt_user = None
 active_mqtt_password = None
-# Bewaar de laatst verzonden config om te kunnen vergelijken
 last_sent_config = {}
 
 def set_mqtt_credentials(user, password):
@@ -26,67 +25,21 @@ def set_mqtt_credentials(user, password):
 
 # --- STANDALONE DASHBOARD DISCOVERY ---
 def publish_dashboard_discovery(client):
-    """Maakt automatisch invulvelden aan in Home Assistant via MQTT Discovery"""
+    """Maakt alléén veilige trigger-knoppen aan in Home Assistant via MQTT Discovery"""
     device_info = {
         "identifiers": ["wols_ca_vault"],
         "name": "Wols-CA Configuration Vault",
         "manufacturer": "Wols"
     }
 
-    # Haal configuratie op 
-    options_file = "/data/options.json"
-    options = {}
-    if os.path.exists(options_file):
-        with open(options_file, "r") as f:
-            options = json.load(f)
-
-    spotify_sets = int(options.get("PlaylistSets", 0))
-    seawater_num = int(options.get("SeaWaterNumber", 0))
-
-    # 1. Maak de velden voor Spotify (max 24)
-    for i in range(1, spotify_sets + 1):
-        fields = {
-            f"SourceID{i}": "mdi:spotify",
-            f"TargetID{i}": "mdi:playlist-music",
-            f"PlayTime{i}": "mdi:clock"
-        }
-        for secret_name, icon in fields.items():
-            topic = f"homeassistant/text/wols_ca/{secret_name}/config"
-            payload = {
-                "name": f"Spotify {secret_name}",
-                "unique_id": f"wols_ca_{secret_name}",
-                "icon": icon,
-                "command_topic": f"wols-ca/admin/set_secret/{secret_name}",
-                "state_topic": f"wols-ca/admin/state/{secret_name}",
-                "device": device_info
-            }
-            client.publish(topic, json.dumps(payload), retain=True)
-            current_val = get_secret(secret_name) or ""
-            client.publish(f"wols-ca/admin/state/{secret_name}", current_val, retain=True)
-
-    # 2. Maak de velden voor SeaWater (max 100)
-    for i in range(1, seawater_num + 1):
-        secret_name = f"Position{i}"
-        topic = f"homeassistant/text/wols_ca/{secret_name}/config"
-        payload = {
-            "name": f"SeaWater {secret_name}",
-            "unique_id": f"wols_ca_{secret_name}",
-            "icon": "mdi:map-marker",
-            "command_topic": f"wols-ca/admin/set_secret/{secret_name}",
-            "state_topic": f"wols-ca/admin/state/{secret_name}",
-            "device": device_info
-        }
-        client.publish(topic, json.dumps(payload), retain=True)
-        current_val = get_secret(secret_name) or ""
-        client.publish(f"wols-ca/admin/state/{secret_name}", current_val, retain=True)
-
-    # 3. Maak Reload en Factory Reset knoppen aan
+    # Maak Reload en Factory Reset knoppen aan (De Triggers)
     buttons = {
         "SpotifyReload": ("wols-ca/admin/command/SpotifyReload", "mdi:reload"),
         "SpotifyReset": ("wols-ca/admin/command/SpotifyReset", "mdi:delete-alert"),
         "SeaWaterReload": ("wols-ca/admin/command/SeaWaterReload", "mdi:reload"),
         "SeaWaterReset": ("wols-ca/admin/command/SeaWaterReset", "mdi:delete-alert")
     }
+    
     for btn_name, (cmd_topic, icon) in buttons.items():
         payload = {
             "name": btn_name,
@@ -125,15 +78,7 @@ class MQTTMessageRouter:
             self._handle_secret_request(client, topic)
             return True
 
-        # 4. Routing: Dashboard Updates
-        elif topic.startswith("wols-ca/admin/set_secret/"):
-            secret_name = topic.split("/")[-1] 
-            update_secret(secret_name, payload)
-            logging.info(f"Secret bijgewerkt vanuit HA UI: {secret_name}")
-            client.publish(f"wols-ca/admin/state/{secret_name}", payload, retain=True)
-            return True   
-
-        # 5. Routing: Commands (Reload / Factory Reset)
+        # 4. Routing: Commands (Reload / Factory Reset)
         elif topic.startswith("wols-ca/admin/command/"):
             command = topic.split("/")[-1]
             
@@ -163,7 +108,7 @@ class MQTTMessageRouter:
                 self._send_seawater_details(client, force_empty=True)
             return True
 
-        # 6. Routing: System & Version Control
+        # 5. Routing: System & Version Control
         elif topic == "wols-ca/uploader/required_version":
             self._handle_version_check(payload)
             return True
@@ -291,7 +236,7 @@ class MQTTMessageRouter:
         # Update de 'laatste' staat
         last_sent_config = new_config
 
-    def _send_spotify_details(self, client, force_empty=False):
+def _send_spotify_details(self, client, force_empty=False):
         playlist_sets = []
         enabled = False
         
@@ -301,28 +246,44 @@ class MQTTMessageRouter:
             with open(options_file, "r") as f:
                 options = json.load(f)
 
-        if not force_empty:
-            enabled = options.get("SpotifyEnabled", False)
-            max_sets = int(options.get("PlaylistSets", 0))
-            for i in range(1, max_sets + 1):
-                source = get_secret(f"SourceID{i}")
-                target = get_secret(f"TargetID{i}")
-                if not source or not target: break 
-                
-                playlist_sets.append({
-                    "source": source,
-                    "target": target,
-                    "play_time": get_secret(f"PlayTime{i}")
-                })
+        # 1. Lees de basis instelling
+        enabled = options.get("SpotifyEnabled", False)
+
+        # 2. Als de module al uitgeschakeld is, direct afbreken
+        if not enabled or force_empty:
+            data = {"Enabled": False}
+            self.upload_to_cpp_service(client, data)
+            return
+
+        # 3. Verzamel de data
+        max_sets = int(options.get("PlaylistSets", 0))
+        for i in range(1, max_sets + 1):
+            source = get_secret(f"SourceID{i}")
+            target = get_secret(f"TargetID{i}")
+            if not source or not target: break 
+            
+            playlist_sets.append({
+                "source": source,
+                "target": target,
+                "play_time": get_secret(f"PlayTime{i}")
+            })
+            
+        # 4. EXTRA FAIL-SAFE: Is de lijst leeg? Forceer dan 'Disabled'
+        if not playlist_sets:
+            logging.warning("Spotify is enabled, but no valid sets found. Forcing Disabled state.")
+            data = {"Enabled": False}
+            self.upload_to_cpp_service(client, data)
+            return
         
+        # 5. Alles is compleet, stuur de volledige configuratie
         data = {
-            "Enabled": enabled,
+            "Enabled": True,
             "Automate": options.get("SpotifyAutomate", False),
-            "ClientID": get_secret("SpotifyClientID") if not force_empty else "",
-            "ClientSecret": get_secret("ClientIDSecret") if not force_empty else "",
+            "ClientID": get_secret("SpotifyClientID"),
+            "ClientSecret": get_secret("ClientIDSecret"),
             "Sets": playlist_sets
         }
-        upload_to_cpp_service( client, data)
+        self.upload_to_cpp_service(client, data)
         
 
     def _send_seawater_details(self, client, force_empty=False):
@@ -336,17 +297,33 @@ class MQTTMessageRouter:
             with open(options_file, "r") as f:
                 options = json.load(f)
 
-        if not force_empty:
-            enabled = options.get("SeaWaterEnabled", False)
-            interval = int(options.get("SensorInterval", 30))
-            max_pos = int(options.get("SeaWaterNumber", 0))
-            for i in range(1, max_pos + 1):
-                pos = get_secret(f"Position{i}")
-                if not pos: break
-                positions.append(pos)
+        # 1. Lees de basis instelling
+        enabled = options.get("SeaWaterEnabled", False)
 
+        # 2. Als de module al uitgeschakeld is, direct afbreken
+        if not enabled or force_empty:
+            data = {"Enabled": False}
+            self._send_config_response(client, "SeaWaterDetails", data)
+            return
+
+        # 3. Verzamel de data
+        interval = int(options.get("SensorInterval", 30))
+        max_pos = int(options.get("SeaWaterNumber", 0))
+        for i in range(1, max_pos + 1):
+            pos = get_secret(f"Position{i}")
+            if not pos: break
+            positions.append(pos)
+
+        # 4. EXTRA FAIL-SAFE: Is de lijst leeg? Forceer dan 'Disabled'
+        if not positions:
+            logging.warning("SeaWater is enabled, but no valid positions found. Forcing Disabled state.")
+            data = {"Enabled": False}
+            self._send_config_response(client, "SeaWaterDetails", data)
+            return
+
+        # 5. Alles is compleet, stuur de volledige configuratie
         data = {
-            "Enabled": enabled,
+            "Enabled": True,
             "SensorInterval": max(5, min(60, interval)),
             "Positions": positions
         }
