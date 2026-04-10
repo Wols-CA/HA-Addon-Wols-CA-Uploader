@@ -16,19 +16,20 @@ def handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password):
     Main entry point for RSA Public Key delivery.
     Loads the RSA object directly from the PEM string and sends the encrypted JSON credentials.
     """
-    global temp_public_key
+    # FIX: We halen nu ook active_public_key binnen om deze te resetten
+    global temp_public_key, active_public_key 
     topic = msg.topic
     
     try:
         logging.info(f"Handshake: Received key data from {topic}.")
         
-        # De payload is al een PEM format string, dus we kunnen het direct inladen
         pem_data = msg.payload
-        
-        # 3. Load the RSA Key directly from PEM bytes
         new_key = serialization.load_pem_public_key(pem_data)
         
         if isinstance(new_key, rsa.RSAPublicKey):
+            # FIX: Omdat we een nieuwe sleutel krijgen, wissen we direct de oude actieve sleutel!
+            active_public_key = None 
+            
             temp_public_key = new_key
             logging.info("🚀 RSA Key loaded successfully! Initiating credential verification...")
             
