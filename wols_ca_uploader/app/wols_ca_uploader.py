@@ -3,18 +3,19 @@ import logging
 import threading
 import time
 import os
+import json
+import traceback
 
-# 1. ENFORCE VERSION AT THE TOP
+# 1. ENFORCE VERSION AT THE TOP (Before loading heavy modules)
 if sys.version_info < (3, 12):
     print("FATAL: This addon requires Python 3.12 or higher.")
     print(f"Current version: {sys.version}")
     sys.exit(1)
 
-import paho.mqtt.client as mqtt
 import yaml
-import json
-import traceback
+import paho.mqtt.client as mqtt
 
+# Local module imports
 from mqtt_triggers import handle_mqtt_message, set_mqtt_credentials, publish_dashboard_discovery
 from secrets_handler import get_secret
 

@@ -1,19 +1,15 @@
 import base64
+import json
 import logging
 import secrets
-import json
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from secrets_handler import get_secret
 
 # Global key states - effectively the "Handshake Memory"
 active_public_key = None  # The "Trusted" key (used for secrets)
 temp_public_key = None    # The "Probation" key (waiting for password_ack)
 
-import json
-import logging
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+
 
 def handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password):
     """

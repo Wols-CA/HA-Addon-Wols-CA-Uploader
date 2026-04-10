@@ -1,18 +1,11 @@
 import json
 import logging
-import threading
 import os
-from packaging.version import parse
+import time
 
 # Local imports
-from secrets_handler import get_secret, update_secret
-from public_key_handler import (
-    handle_raw_bytes, 
-    send_encrypted_payload,
-    promote_temp_key, 
-    is_public_key_active
-)
-import public_key_handler 
+import secrets_handler
+import public_key_handler
 
 active_mqtt_user = None
 active_mqtt_password = None
@@ -25,14 +18,14 @@ def set_mqtt_credentials(user, password):
 
 # --- STANDALONE DASHBOARD DISCOVERY ---
 def publish_dashboard_discovery(client):
-    """Maakt alléén veilige trigger-knoppen aan in Home Assistant via MQTT Discovery"""
+    """Creates secure trigger buttons in Home Assistant via MQTT Discovery"""
     device_info = {
         "identifiers": ["wols_ca_vault"],
         "name": "Wols-CA Configuration Vault",
         "manufacturer": "Wols"
     }
 
-    # Maak Reload en Factory Reset knoppen aan (De Triggers)
+    # Create Reload and Factory Reset buttons (The Triggers)
     buttons = {
         "SpotifyReload": ("wols-ca/admin/command/SpotifyReload", "mdi:reload"),
         "SpotifyReset": ("wols-ca/admin/command/SpotifyReset", "mdi:delete-alert"),
@@ -51,16 +44,41 @@ def publish_dashboard_discovery(client):
         }
         client.publish(f"homeassistant/button/wols_ca/{btn_name}/config", json.dumps(payload), retain=True)
 
+
 class MQTTMessageRouter:
     def __init__(self, uploader_version):
         self.uploader_version = uploader_version
+        self.logger = logging.getLogger(__name__)
+        
+        # Caching mechanism to prevent excessive disk I/O on SD cards
+        self._cached_options = {}
+        self._options_last_read = 0
+        self._options_cache_ttl = 300  # Cache duration in seconds (5 minutes)
+
+    def _get_options(self):
+        """Helper to safely fetch options from disk with a 5-minute TTL cache."""
+        current_time = time.time()
+        
+        if current_time - self._options_last_read > self._options_cache_ttl:
+            options_file = "/data/options.json"
+            if os.path.exists(options_file):
+                try:
+                    with open(options_file, "r") as f:
+                        self._cached_options = json.load(f)
+                    self._options_last_read = current_time
+                except Exception as e:
+                    self.logger.error(f"Error reading options.json: {e}")
+            else:
+                self._cached_options = {}
+                
+        return self._cached_options
 
     def route_message(self, client, msg):
         topic = msg.topic
         try:
             payload = msg.payload.decode().strip()
         except UnicodeDecodeError:
-            logging.error(f"Failed to decode payload for topic {topic}")
+            self.logger.error(f"Failed to decode payload for topic {topic}")
             return False
 
         # 1. Routing: Handshake & Security Lifecycle
@@ -83,28 +101,28 @@ class MQTTMessageRouter:
             command = topic.split("/")[-1]
             
             if command == "SpotifyReload":
-                logging.info("Manual reload requested for Spotify.")
+                self.logger.info("Manual reload requested for Spotify.")
                 self._send_spotify_details(client)
                 
             elif command == "SeaWaterReload":
-                logging.info("Manual reload requested for Sea Water.")
+                self.logger.info("Manual reload requested for Sea Water.")
                 self._send_seawater_details(client)
                 
             elif command == "SpotifyReset":
-                logging.warning("FACTORY RESET TRIGGERED FOR SPOTIFY!")
+                self.logger.warning("FACTORY RESET TRIGGERED FOR SPOTIFY!")
                 for i in range(1, 25):
                     for field in [f"SourceID{i}", f"TargetID{i}", f"PlayTime{i}"]:
-                        update_secret(field, "")
+                        secrets_handler.update_secret(field, "")
                         client.publish(f"wols-ca/admin/state/{field}", "", retain=True)
-                # Stuur lege config naar C++
+                # Send empty config to C++
                 self._send_spotify_details(client, force_empty=True)
 
             elif command == "SeaWaterReset":
-                logging.warning("FACTORY RESET TRIGGERED FOR SEA WATER!")
+                self.logger.warning("FACTORY RESET TRIGGERED FOR SEA WATER!")
                 for i in range(1, 101):
-                    update_secret(f"Position{i}", "")
+                    secrets_handler.update_secret(f"Position{i}", "")
                     client.publish(f"wols-ca/admin/state/Position{i}", "", retain=True)
-                # Stuur lege config naar C++
+                # Send empty config to C++
                 self._send_seawater_details(client, force_empty=True)
             return True
 
@@ -126,12 +144,12 @@ class MQTTMessageRouter:
     def _handle_handshake(self, client, topic, payload, msg):
         if topic in ["wols-ca/keys/public", "wols-ca/keys/raw_bytes"]:
             global active_mqtt_user, active_mqtt_password
-            handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password)
+            public_key_handler.handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password)
             
         elif topic == "wols-ca/admin/password_ack":
             if payload == "ACK":
-                logging.info("🚀 HANDSHAKE SUCCESS: Backend verified the credentials.")
-                promote_temp_key()
+                self.logger.info("🚀 HANDSHAKE SUCCESS: Backend verified the credentials.")
+                public_key_handler.promote_temp_key()
                 client.subscribe([
                     ("wols-ca/trigger/#", 1),
                     ("spotify/+/Admin/Secrets/#", 1),
@@ -139,14 +157,14 @@ class MQTTMessageRouter:
                     ("wols-ca/admin/set_secret/#", 1)
                 ])
                 
-                # PUSH: Stuur direct alle configuraties ongevraagd naar C++
-                logging.info("Pushing configuration to C++ Service...")
+                # PUSH: Send all configurations to C++ unconditionally
+                self.logger.info("Pushing configuration to C++ Service...")
                 self._send_ha_service_settings(client)
                 self._send_spotify_details(client)
                 self._send_seawater_details(client)
 
             elif payload == "NACK":
-                logging.error("❌ Handshake REJECTED")
+                self.logger.error("❌ Handshake REJECTED")
                 public_key_handler.active_public_key = None
                 public_key_handler.temp_public_key = None
 
@@ -160,7 +178,7 @@ class MQTTMessageRouter:
                 return
                 
             secret_name = topic.split("/")[-1]
-            if update_secret(secret_name, secret_value):
+            if secrets_handler.update_secret(secret_name, secret_value):
                 feedback = json.dumps({
                     "current_value": "Stored by Uploader",
                     "purpose": data.get("purpose", ""),
@@ -177,8 +195,8 @@ class MQTTMessageRouter:
 
     def _handle_secret_request(self, client, topic):
         request_type = topic.split("/")[-1] 
-        if not is_public_key_active():
-            logging.warning(f"Request {request_type} Refused: No active RSA key.")
+        if not public_key_handler.is_public_key_active():
+            self.logger.warning(f"Request {request_type} Refused: No active RSA key.")
             return
 
         if request_type == "HAServiceSettings":
@@ -190,11 +208,7 @@ class MQTTMessageRouter:
 
     # --- PUSH FUNCTIONS ---
     def _send_ha_service_settings(self, client):
-        options_file = "/data/options.json"
-        options = {}
-        if os.path.exists(options_file):
-            with open(options_file, "r") as f:
-                options = json.load(f)
+        options = self._get_options()
                 
         data = {
             "BrokerURL": options.get("mqtt_broker", ""),
@@ -208,120 +222,103 @@ class MQTTMessageRouter:
         }
         self._send_config_response(client, "HAServiceSettings", data)
 
-    def upload_to_cpp_service(self, client,new_config):
+    def upload_to_cpp_service(self, client, new_config):
         global last_sent_config
         
-        # Check of we een 'snelle' update kunnen doen
+        # Check if we can perform a 'quick' update
         is_token_refresh = False
         
         if last_sent_config:
-            # Maak een kopie zonder de token om de rest te vergelijken
+            # Create a copy without the token to compare the rest
             current_data_no_token = {k: v for k, v in new_config.items() if k != 'access_token'}
             last_data_no_token = {k: v for k, v in last_sent_config.items() if k != 'access_token'}
             
-            # Als de rest hetzelfde is, maar de token is anders
+            # If everything else is the same, but the token is different
             if current_data_no_token == last_data_no_token and new_config.get('access_token') != last_sent_config.get('access_token'):
                 is_token_refresh = True
 
-        # Voeg de hint toe voor de C++ service
+        # Add hint for the C++ service
         payload = new_config.copy()
-        if is_token_refresh:
-            payload['AccessTokenOnly'] = True
-        else:
-            payload['AccessTokenOnly'] = False
+        payload['AccessTokenOnly'] = is_token_refresh
 
-        # Verstuur de JSON naar de C++ service (via MQTT of HTTP)
+        # Send the JSON to the C++ service (via MQTT or HTTP)
         self._send_config_response(client, "SpotifyDetails", payload)
         
-        # Update de 'laatste' staat
+        # Update the 'last' state
         last_sent_config = new_config
 
-def _send_spotify_details(self, client, force_empty=False):
+    def _send_spotify_details(self, client, force_empty=False):
         playlist_sets = []
-        enabled = False
-        
-        options_file = "/data/options.json"
-        options = {}
-        if os.path.exists(options_file):
-            with open(options_file, "r") as f:
-                options = json.load(f)
+        options = self._get_options()
 
-        # 1. Lees de basis instelling
+        # 1. Read basic setting
         enabled = options.get("SpotifyEnabled", False)
 
-        # 2. Als de module al uitgeschakeld is, direct afbreken
+        # 2. If the module is already disabled, abort immediately
         if not enabled or force_empty:
             data = {"Enabled": False}
             self.upload_to_cpp_service(client, data)
             return
 
-        # 3. Verzamel de data
+        # 3. Collect the data
         max_sets = int(options.get("PlaylistSets", 0))
         for i in range(1, max_sets + 1):
-            source = get_secret(f"SourceID{i}")
-            target = get_secret(f"TargetID{i}")
+            source = secrets_handler.get_secret(f"SourceID{i}")
+            target = secrets_handler.get_secret(f"TargetID{i}")
             if not source or not target: break 
             
             playlist_sets.append({
                 "source": source,
                 "target": target,
-                "play_time": get_secret(f"PlayTime{i}")
+                "play_time": secrets_handler.get_secret(f"PlayTime{i}")
             })
             
-        # 4. EXTRA FAIL-SAFE: Is de lijst leeg? Forceer dan 'Disabled'
+        # 4. EXTRA FAIL-SAFE: Is the list empty? Force 'Disabled'
         if not playlist_sets:
-            logging.warning("Spotify is enabled, but no valid sets found. Forcing Disabled state.")
+            self.logger.warning("Spotify is enabled, but no valid sets found. Forcing Disabled state.")
             data = {"Enabled": False}
             self.upload_to_cpp_service(client, data)
             return
         
-        # 5. Alles is compleet, stuur de volledige configuratie
+        # 5. Everything is complete, send the full configuration
         data = {
             "Enabled": True,
             "Automate": options.get("SpotifyAutomate", False),
-            "ClientID": get_secret("SpotifyClientID"),
-            "ClientSecret": get_secret("ClientIDSecret"),
+            "ClientID": secrets_handler.get_secret("SpotifyClientID"),
+            "ClientSecret": secrets_handler.get_secret("ClientIDSecret"),
             "Sets": playlist_sets
         }
         self.upload_to_cpp_service(client, data)
-        
 
     def _send_seawater_details(self, client, force_empty=False):
         positions = []
-        enabled = False
-        interval = 30
-        
-        options_file = "/data/options.json"
-        options = {}
-        if os.path.exists(options_file):
-            with open(options_file, "r") as f:
-                options = json.load(f)
+        options = self._get_options()
 
-        # 1. Lees de basis instelling
+        # 1. Read basic setting
         enabled = options.get("SeaWaterEnabled", False)
 
-        # 2. Als de module al uitgeschakeld is, direct afbreken
+        # 2. If the module is already disabled, abort immediately
         if not enabled or force_empty:
             data = {"Enabled": False}
             self._send_config_response(client, "SeaWaterDetails", data)
             return
 
-        # 3. Verzamel de data
+        # 3. Collect the data
         interval = int(options.get("SensorInterval", 30))
         max_pos = int(options.get("SeaWaterNumber", 0))
         for i in range(1, max_pos + 1):
-            pos = get_secret(f"Position{i}")
+            pos = secrets_handler.get_secret(f"Position{i}")
             if not pos: break
             positions.append(pos)
 
-        # 4. EXTRA FAIL-SAFE: Is de lijst leeg? Forceer dan 'Disabled'
+        # 4. EXTRA FAIL-SAFE: Is the list empty? Force 'Disabled'
         if not positions:
-            logging.warning("SeaWater is enabled, but no valid positions found. Forcing Disabled state.")
+            self.logger.warning("SeaWater is enabled, but no valid positions found. Forcing Disabled state.")
             data = {"Enabled": False}
             self._send_config_response(client, "SeaWaterDetails", data)
             return
 
-        # 5. Alles is compleet, stuur de volledige configuratie
+        # 5. Everything is complete, send the full configuration
         data = {
             "Enabled": True,
             "SensorInterval": max(5, min(60, interval)),
@@ -329,51 +326,51 @@ def _send_spotify_details(self, client, force_empty=False):
         }
         self._send_config_response(client, "SeaWaterDetails", data)
 
-def _send_config_response(self, client, key, data):
-    # Haal de ID op
-    service_id = self.options.get("WolsCA_ServiceID", "").strip()
-    
-    # CHECK: Is de ID leeg of niet ingesteld?
-    if not service_id:
-        # We doen niets en loggen de fout
-        self.logger.error("Error: WolsCA_ServiceID is not configured in the options!")
-        return
-
-    # Als het niet leeg is, gaan we verder
-    base_prefix = "WolsCA/ServiceInstance"
-    topic = f"{base_prefix}/{service_id}/Config/{key}"
-    
-    client.publish(topic, json.dumps(data), retain=True)
-    # Log: "Config gepusht naar WolsCA Service op host: master-hub-woonkamer"
-
-def _handle_version_check(self, payload):
-    """
-    Verwerkt inkomende versie-informatie van de C++ service.
-    """
-    # 1. Haal de ServiceID op om te valideren
-    service_id = self.options.get("WolsCA_ServiceID", "").strip()
-    
-    # 2. Safety check: als we geen ID hebben, doen we niets
-    if not service_id:
-        self.logger.error("Versiecheck afgebroken: WolsCA_ServiceID is leeg.")
-        return
-
-    try:
-        data = json.loads(payload)
+    def _send_config_response(self, client, key, data):
+        options = self._get_options()
         
-        # 3. Check of de payload wel voor ons bedoeld is (optioneel, maar veilig)
-        incoming_id = data.get("service_id", "")
-        if incoming_id and incoming_id != service_id:
-            return # Bericht is voor een andere instantie, negeer het
-
-        version = data.get("version", "Onbekend")
-        status = data.get("status", "Online")
-
-        # 4. Log de status van de specifieke service-host
-        self.logger.info(f"WolsCA Service [{service_id}] is {status}. Versie: {version}")
+        # Retrieve the ID
+        service_id = options.get("WolsCA_ServiceID", "").strip()
         
-    except json.JSONDecodeError:
-        self.logger.error("Versiecheck: Ontvangen payload is geen geldige JSON.")
+        # CHECK: Is the ID empty or not configured?
+        if not service_id:
+            self.logger.error("Error: WolsCA_ServiceID is not configured in the options!")
+            return
+
+        # If it's not empty, proceed
+        base_prefix = "WolsCA/ServiceInstance"
+        topic = f"{base_prefix}/{service_id}/Config/{key}"
+        
+        client.publish(topic, json.dumps(data), retain=True)
+
+    def _handle_version_check(self, payload):
+        """Processes incoming version information from the C++ service."""
+        options = self._get_options()
+        
+        # 1. Retrieve the ServiceID for validation
+        service_id = options.get("WolsCA_ServiceID", "").strip()
+        
+        # 2. Safety check: if we have no ID, abort
+        if not service_id:
+            self.logger.error("Version check aborted: WolsCA_ServiceID is empty.")
+            return
+
+        try:
+            data = json.loads(payload)
+            
+            # 3. Check if the payload is intended for us (optional, but safe)
+            incoming_id = data.get("service_id", "")
+            if incoming_id and incoming_id != service_id:
+                return # Message is for another instance, ignore it
+
+            version = data.get("version", "Unknown")
+            status = data.get("status", "Online")
+
+            # 4. Log the status of the specific service host
+            self.logger.info(f"WolsCA Service [{service_id}] is {status}. Version: {version}")
+            
+        except json.JSONDecodeError:
+            self.logger.error("Version check: Received payload is not valid JSON.")
 
 _router_instance = None
 def handle_mqtt_message(client, msg, uploader_version):

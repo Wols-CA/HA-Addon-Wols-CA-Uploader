@@ -1,4 +1,3 @@
-paho-mqtt>=2.1.0
-pyyaml
-cryptography
-packaging
+paho-mqtt==2.1.0
+PyYAML==6.0.1
+cryptography==46.0.7
