@@ -17,6 +17,32 @@ def set_mqtt_credentials(user, password):
     active_mqtt_user = user
     active_mqtt_password = password
 
+def publish_dashboard_discovery(client):
+    """Herstelt de ontbrekende discovery functie voor Home Assistant."""
+    device_info = {
+        "identifiers": ["wols_ca_vault"],
+        "name": "wols_ca Configuration Vault",
+        "manufacturer": "Wols CA"
+    }
+
+    buttons = {
+        "SpotifyReload": ("wols_ca_mqtt/admin/command/SpotifyReload", "mdi:reload"),
+        "SpotifyReset": ("wols_ca_mqtt/admin/command/SpotifyReset", "mdi:delete-alert"),
+        "SeaWaterReload": ("wols_ca_mqtt/admin/command/SeaWaterReload", "mdi:reload"),
+        "SeaWaterReset": ("wols_ca_mqtt/admin/command/SeaWaterReset", "mdi:delete-alert")
+    }
+    
+    for btn_name, (cmd_topic, icon) in buttons.items():
+        payload = {
+            "name": btn_name,
+            "unique_id": f"wols_ca_btn_{btn_name}",
+            "icon": icon,
+            "command_topic": cmd_topic,
+            "payload_press": "PRESS",
+            "device": device_info
+        }
+        client.publish(f"homeassistant/button/wols_ca/{btn_name}/config", json.dumps(payload), retain=True)
+
 class MQTTMessageRouter:
     def __init__(self, uploader_version):
         self.uploader_version = uploader_version
@@ -42,39 +68,30 @@ class MQTTMessageRouter:
         return self._cached_options
 
     def _get_scrambled_path(self, sub_topic):
-        """Berekent het 'troebele' pad volgens de Wols CA standaard."""
         options = self._get_options()
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
-        
-        # Gebruik de eerste 16 karakters van de SHA256 hex digest
         mb_hash = hashlib.sha256(mailbox_id.encode()).hexdigest()[:16]
         sub_hash = hashlib.sha256(sub_topic.encode()).hexdigest()[:16]
-        
         return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
 
     def route_message(self, client, msg):
         topic = msg.topic
         try:
-            # Veiligere check voor payload
             if not msg.payload:
                 return False
-                
             payload_str = msg.payload.decode().strip()
             data = json.loads(payload_str) if payload_str.startswith('{') else None
         except Exception:
-            # Als het geen JSON is maar een PEM key, gaat dit goed via handle_handshake
             payload_str = msg.payload.decode().strip() if msg.payload else ""
             data = None
 
-        # 1. Check op 'topic_structure'
         structure_hash = hashlib.sha256("topic_structure".encode()).hexdigest()[:16]
         if topic.endswith(structure_hash):
             if data and data.get("instance_name") == "ha_service_uploader":
                 self.topic_map = {m['id']: m['topic'] for m in data['modules']}
-                self.logger.info("🚀 Successfully loaded secure structure: ha_service_uploader")
+                self.logger.info("🚀 Successfully loaded secure structure")
                 return True
 
-        # 2. Handshake & Security
         if topic in ["wols_ca_mqtt/keys/public", "wols_ca_mqtt/admin/password_ack", "wols_ca/keys/public"]:
             self._handle_handshake(client, topic, payload_str, msg)
             return True
@@ -88,11 +105,8 @@ class MQTTMessageRouter:
             if payload == "ACK":
                 self.logger.info("🚀 SECURE HANDSHAKE SUCCESS")
                 public_key_handler.promote_temp_key()
-                
-                # Na succes: Abonneer op de beveiligde brievenbus
                 inbox = self._get_scrambled_path("inbox")
                 client.subscribe(inbox, 1)
-                
                 self._send_ha_service_settings(client)
                 self._send_spotify_details(client)
                 self._send_seawater_details(client)
@@ -179,7 +193,3 @@ class MQTTMessageRouter:
 def handle_mqtt_message(client, msg, uploader_version):
     global _router_instance
     if _router_instance is None:
-        _router_instance = MQTTMessageRouter(uploader_version)
-    return _router_instance.route_message(client, msg)
-
-_router_instance = None
