@@ -2,11 +2,9 @@ import yaml
 import logging
 import os
 
-# Standaard pad voor Home Assistant secrets
 SECRETS_FILE = "/config/secrets.yaml"
 
 def get_secret(name):
-    """Haalt een geheim op uit de HA secrets.yaml."""
     if not os.path.exists(SECRETS_FILE):
         return None
     try:
@@ -18,14 +16,12 @@ def get_secret(name):
         return None
 
 def update_secret(name, value):
-    """Update of voegt een geheim toe aan de secrets.yaml."""
     try:
         secrets_data = {}
         if os.path.exists(SECRETS_FILE):
             with open(SECRETS_FILE, "r") as f:
                 secrets_data = yaml.safe_load(f) or {}
 
-        # Alleen updaten als de waarde echt anders is
         if secrets_data.get(name) == value:
             return True
 
