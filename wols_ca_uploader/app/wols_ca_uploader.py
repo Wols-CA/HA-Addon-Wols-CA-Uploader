@@ -15,7 +15,13 @@ import yaml
 import paho.mqtt.client as mqtt
 
 # Local module imports
-from mqtt_triggers import handle_mqtt_message, set_mqtt_credentials, publish_dashboard_discovery
+# In wols_ca_uploader.py
+from mqtt_triggers import (
+    handle_mqtt_message, 
+    set_mqtt_credentials, 
+    publish_dashboard_discovery, 
+    MQTTMessageRouter  # <--- Deze moet erbij!
+)
 from secrets_handler import get_secret
 import public_key_handler
 
@@ -70,10 +76,14 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
 def main():
     global current_version
     try:
-        current_version = "0.1.6" # Voorbeeld
+        current_version = "0.1.6"
         config_file = "/data/options.json"
-        with open(config_file, 'r') as f:
-            options = json.load(f)
+        
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                options = json.load(f)
+        else:
+            options = {}
 
         broker = options.get("mqtt_broker", "localhost")
         port = options.get("mqtt_port", 1883)
@@ -81,9 +91,15 @@ def main():
         password = options.get("mqtt_password") or get_secret("mqtt_password")
         
         set_mqtt_credentials(user, password)
+
+        # 1. FORCEER INITIALISATIE VAN DE ROUTER
+        # Nu MQTTMessageRouter is geïmporteerd, kan deze aangemaakt worden
+        import mqtt_triggers
+        mqtt_triggers._router_instance = MQTTMessageRouter(current_version)
         
-        # Gebruik API v2 met userdata voor connect callback
+        # 2. Configureer de MQTT Client
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata={'options': options})
+        
         if user and password:
             client.username_pw_set(user, password)
 
@@ -93,12 +109,14 @@ def main():
         logging.info(f"Connecting to {broker} via Mailbox {options.get('WolsCA_MailboxID', '88889999')}...")
         client.connect(broker, port, 60)
 
+        # Gebruik de mailbox ID voor de heartbeat status
         start_heartbeat(client, options.get("WolsCA_MailboxID", "88889999")) 
+        
         client.loop_forever()
         
     except Exception as e:
-        logging.error(f"FATAL: {e}")
+        logging.error(f"FATAL ERROR during startup: {e}")
+        logging.error(traceback.format_exc())
         sys.exit(1)
-
 if __name__ == "__main__":
     main()
