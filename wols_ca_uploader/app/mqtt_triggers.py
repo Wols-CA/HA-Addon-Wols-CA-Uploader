@@ -142,11 +142,14 @@ class MQTTMessageRouter:
 
     def _handle_handshake(self, client, topic, payload, msg):
         if "keys/public" in topic:
+            import public_key_handler
             public_key_handler.handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password)
         elif "password_ack" in topic:
             if payload == "ACK":
                 self.logger.info("🚀 SECURE HANDSHAKE SUCCESS")
-                public_key_handler.promote_temp_key()
+                import public_key_handler
+                if hasattr(public_key_handler, 'promote_temp_key'):
+                    public_key_handler.promote_temp_key()
                 self._send_ha_service_settings(client)
                 self._send_spotify_details(client)
                 self._send_seawater_details(client)
@@ -154,11 +157,12 @@ class MQTTMessageRouter:
     def _send_config_response(self, client, key, data):
         options = self._get_options()
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
+        import public_key_handler
         envelope = {
             "header": {
                 "from": options.get("WolsCA_UploaderName", "ha_uploader"),
                 "timestamp": int(time.time()),
-                "encrypted": public_key_handler.is_public_key_active()
+                "encrypted": public_key_handler.active_public_key is not None
             },
             "payload": data
         }
