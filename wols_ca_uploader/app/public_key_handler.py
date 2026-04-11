@@ -20,8 +20,10 @@ def StepA_Process_PublicKey(client, msg, mqtt_user, mqtt_password, mqtt_url):
         if isinstance(new_key, rsa.RSAPublicKey):
             temp_public_key = new_key
             
-            # Store for verification in Step C
-            stored_credentials = {"url": mqtt_url, "user": mqtt_user, "pass": mqtt_password}
+            # Wols CA veilige fallback als password None is
+            safe_pass = mqtt_password if mqtt_password else ""
+            stored_credentials = {"url": mqtt_url, "user": mqtt_user, "pass": safe_pass}
+            
             logging.info("🚀 [Step A] RSA Public Key received. Sending encrypted credentials (Step B)...")
             
             payload = json.dumps(stored_credentials)
@@ -39,14 +41,25 @@ def StepC_Verify_Service_And_Respond(client, msg):
         data_str = envelope.get("data", "")
         incoming_signature = envelope.get("signature", "")
         
-        # Verify the signature using the password as Proof of Decryption
-        expected_sig = hashlib.sha256((data_str + stored_credentials.get("pass", "")).encode()).hexdigest()
+        # 1. Bepaal de ruwe SHA256 Hash
+        secret_string = data_str + stored_credentials.get("pass", "")
+        raw_hash = hashlib.sha256(secret_string.encode('utf-8'))
         
-        if incoming_signature != expected_sig:
+        # 2. Bepaal de verwachte antwoorden (Kleine letters hex, OF Base64)
+        expected_hex = raw_hash.hexdigest().lower()
+        expected_b64 = base64.b64encode(raw_hash.digest()).decode('utf-8')
+        
+        incoming_sig_lower = incoming_signature.lower()
+        
+        # 3. Wols CA Robuuste Verificatie
+        if incoming_sig_lower != expected_hex and incoming_signature != expected_b64:
             logging.error("[Step C] FATAL: Signature mismatch! Service identity compromised.")
+            logging.error(f"   -> C++ Sent       : {incoming_signature}")
+            logging.error(f"   -> Python Expects : {expected_hex} (Hex) OR {expected_b64} (Base64)")
             client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
             return
 
+        # 4. Als de controle slaagt, ontsleutel de rest
         data = json.loads(data_str)
         if (data.get("url") == stored_credentials["url"] and 
             data.get("user") == stored_credentials["user"] and 
@@ -75,14 +88,14 @@ def send_encrypted_payload(client, topic, plaintext, use_temp=False):
         return
         
     encrypted = key_to_use.encrypt(
-        plaintext.encode(),
+        plaintext.encode('utf-8'),
         padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()),
             algorithm=hashes.SHA256(),
             label=None
         )
     )
-    b64_string = base64.b64encode(encrypted).decode()
+    b64_string = base64.b64encode(encrypted).decode('utf-8')
     client.publish(topic, b64_string, qos=1, retain=False)
     
 def handle_ack(payload):
@@ -90,6 +103,12 @@ def handle_ack(payload):
         logging.info("🚀 [Wols CA Handshake Complete] Mutual Authentication Successful. System Operational.")
     elif payload == "NACK":
         logging.error("❌ [Handshake Failed] Service rejected the verification.")
+
+def promote_temp_key():
+    pass # Replaced dynamically during Step C
+
+def is_public_key_active():
+    return active_public_key is not None
 
 def update_rolling_key(new_pem_string):
     """Processes Jitter/Rolling Key updates."""
