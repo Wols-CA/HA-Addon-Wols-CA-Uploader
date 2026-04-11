@@ -17,47 +17,6 @@ def set_mqtt_credentials(user, password):
     active_mqtt_user = user
     active_mqtt_password = password
 
-def publish_dashboard_discovery(client):
-    """
-    Genereert persistente configuratievelden in Home Assistant.
-    Zorgt dat velden altijd zichtbaar zijn voor configuratie [cite: 2026-04-09].
-    """
-    options = _router_instance._get_options()
-    mailbox_id = options.get("WolsCA_MailboxID", "88889999")
-    
-    # 1. Apparaat Definities [cite: 2026-04-09]
-    dev_seawater = {"identifiers": ["wols_ca_seawater"], "name": "Wols CA SeaWater System", "manufacturer": "Wols CA"}
-    dev_spotify = {"identifiers": ["wols_ca_spotify"], "name": "Wols CA Spotify System", "manufacturer": "Wols CA"}
-
-    # 2. SeaWater Velden (Altijd 100) [cite: 2026-04-09]
-    sw_mailbox = _router_instance._get_scrambled_path("SeaWaterDetails")
-    for i in range(1, 101):
-        sw_payload = {
-            "name": f"SW Position {i}",
-            "unique_id": f"wols_ca_sw_pos_{i}",
-            "icon": "mdi:map-marker-distance",
-            "command_topic": f"{sw_mailbox}/set/Position{i}",
-            "state_topic": f"{sw_mailbox}/state/Position{i}",
-            "device": dev_seawater
-        }
-        client.publish(f"homeassistant/text/wols_ca/sw_pos_{i}/config", json.dumps(sw_payload), retain=True)
-
-    # 3. Spotify Velden (Altijd 24 sets) [cite: 2026-04-09]
-    spot_mailbox = _router_instance._get_scrambled_path("SpotifyDetails")
-    for i in range(1, 25):
-        for field in ["SourceID", "TargetID", "PlayTime"]:
-            spot_payload = {
-                "name": f"Spotify {field} {i}",
-                "unique_id": f"wols_ca_spot_{field.lower()}_{i}",
-                "icon": "mdi:music-box-outline",
-                "command_topic": f"{spot_mailbox}/set/{field}{i}",
-                "state_topic": f"{spot_mailbox}/state/{field}{i}",
-                "device": dev_spotify
-            }
-            client.publish(f"homeassistant/text/wols_ca/spot_{field.lower()}_{i}/config", json.dumps(spot_payload), retain=True)
-
-    logging.info("🚀 Dashboard Discovery: 172 secure entities registered in Home Assistant.")
-    
 class MQTTMessageRouter:
     def __init__(self, uploader_version):
         self.uploader_version = uploader_version
@@ -83,33 +42,40 @@ class MQTTMessageRouter:
         return self._cached_options
 
     def _get_scrambled_path(self, sub_topic):
+        """Berekent het 'troebele' pad volgens de Wols CA standaard."""
         options = self._get_options()
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
+        
+        # Gebruik de eerste 16 karakters van de SHA256 hex digest
         mb_hash = hashlib.sha256(mailbox_id.encode()).hexdigest()[:16]
         sub_hash = hashlib.sha256(sub_topic.encode()).hexdigest()[:16]
+        
         return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
 
     def route_message(self, client, msg):
         topic = msg.topic
         try:
+            # Veiligere check voor payload
             if not msg.payload:
                 return False
+                
             payload_str = msg.payload.decode().strip()
             data = json.loads(payload_str) if payload_str.startswith('{') else None
         except Exception:
+            # Als het geen JSON is maar een PEM key, gaat dit goed via handle_handshake
             payload_str = msg.payload.decode().strip() if msg.payload else ""
             data = None
 
+        # 1. Check op 'topic_structure'
         structure_hash = hashlib.sha256("topic_structure".encode()).hexdigest()[:16]
         if topic.endswith(structure_hash):
             if data and data.get("instance_name") == "ha_service_uploader":
                 self.topic_map = {m['id']: m['topic'] for m in data['modules']}
-                self.logger.info("🚀 Successfully loaded secure structure")
+                self.logger.info("🚀 Successfully loaded secure structure: ha_service_uploader")
                 return True
 
-        if topic in ["wols_ca_mqtt/keys/public", 
-                     "wols_ca_mqtt/admin/password_ack", 
-                     "wols_ca_mqtt/keys/public"]:
+        # 2. Handshake & Security
+        if topic in ["wols_ca_mqtt/keys/public", "wols_ca_mqtt/admin/password_ack", "wols_ca/keys/public"]:
             self._handle_handshake(client, topic, payload_str, msg)
             return True
 
@@ -122,8 +88,11 @@ class MQTTMessageRouter:
             if payload == "ACK":
                 self.logger.info("🚀 SECURE HANDSHAKE SUCCESS")
                 public_key_handler.promote_temp_key()
+                
+                # Na succes: Abonneer op de beveiligde brievenbus
                 inbox = self._get_scrambled_path("inbox")
                 client.subscribe(inbox, 1)
+                
                 self._send_ha_service_settings(client)
                 self._send_spotify_details(client)
                 self._send_seawater_details(client)
@@ -208,11 +177,9 @@ class MQTTMessageRouter:
         self._send_config_response(client, "SeaWaterDetails", data)
 
 def handle_mqtt_message(client, msg, uploader_version):
-    """Verwerkt inkomende MQTT berichten via de router instantie."""
     global _router_instance
     if _router_instance is None:
         _router_instance = MQTTMessageRouter(uploader_version)
     return _router_instance.route_message(client, msg)
 
-# Initialiseer de globale instantie op None
 _router_instance = None
