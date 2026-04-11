@@ -5,11 +5,10 @@ import time
 import os
 import json
 import traceback
+import hashlib
 
-# 1. ENFORCE VERSION AT THE TOP (Before loading heavy modules)
+# 1. ENFORCE VERSION
 if sys.version_info < (3, 12):
-    print("FATAL: This addon requires Python 3.12 or higher.")
-    print(f"Current version: {sys.version}")
     sys.exit(1)
 
 import yaml
@@ -18,16 +17,22 @@ import paho.mqtt.client as mqtt
 # Local module imports
 from mqtt_triggers import handle_mqtt_message, set_mqtt_credentials, publish_dashboard_discovery
 from secrets_handler import get_secret
+import public_key_handler
 
-# Global variable to hold the version across callbacks
 current_version = "Unknown"
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-def start_heartbeat(client, interval=60):
+def get_scrambled_path(mailbox_id, sub_topic):
+    """Sync met C++ GlobalUtilities SHA256 logic [cite: 2026-04-09]."""
+    mb_hash = hashlib.sha256(mailbox_id.encode()).hexdigest()[:16]
+    sub_hash = hashlib.sha256(sub_topic.encode()).hexdigest()[:16]
+    return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
+
+def start_heartbeat(client, mailbox_id, interval=60):
     def heartbeat():
         while True:
             if client.is_connected():
@@ -36,121 +41,63 @@ def start_heartbeat(client, interval=60):
                     "timestamp": int(time.time()),
                     "version": current_version
                 })
-                client.publish("wols_ca/uploader/status", payload, qos=1, retain=True)
+                # Heartbeat naar de beveiligde status-mailbox (GEEN retain) [cite: 2026-04-09]
+                topic = get_scrambled_path(mailbox_id, "uploader_status")
+                client.publish(topic, payload, qos=0, retain=False)
             time.sleep(interval)
     threading.Thread(target=heartbeat, daemon=True).start()
 
-def get_version_from_yaml():
-    version_file = "/app/internal/version.yaml"
-    try:
-        with open(version_file, "r") as f:
-            data = yaml.safe_load(f)
-        return data.get("version", "Unknown")
-    except Exception as e:
-        logging.error(f"Could not read version file: {e}")
-        return "Unknown"
-
-def get_mqtt_settings():
-    config_file = "/data/options.json"
-    try:
-        with open(config_file, 'r') as f:
-            data = json.load(f)
-        broker = data.get("mqtt_broker", "localhost")
-        port = data.get("mqtt_port", 1883)
-        user = data.get("mqtt_user", None)
-        password = data.get("mqtt_password", None)
-        topic = data.get("mqtt_topic", None)
-
-        if not password:
-            logging.info("MQTT password empty in options.json. Loading from secrets.yaml...")
-            password = get_secret("mqtt_password")
-        else:
-            logging.info("MQTT password loaded directly from options.json.")
-
-        set_mqtt_credentials(user, password)
-        return broker, port, user, password, topic
-    except Exception as e:
-        logging.error(f"Critical error loading /data/options.json: {e}")
-        raise
-
 def on_connect(client, userdata, flags, reason_code, properties=None):
     if reason_code == 0:
-        logging.info("Connected successfully to MQTT broker (API v2).")
+        logging.info("Connected to Wols CA MQTT Broker.")
         
-        online_payload = json.dumps({
-            "status": "online", 
-            "version": current_version, 
-            "timestamp": int(time.time())
-        })
-        client.publish("wols_ca/uploader/status", online_payload, qos=1, retain=True)
+        # Gebruik de MailboxID uit de userdata of config
+        options = userdata.get('options', {})
+        m_id = options.get("WolsCA_MailboxID", "88889999")
 
+        # 1. Subscribe op de 'Troebele' Handshake kanalen [cite: 2026-04-09]
         client.subscribe([
-            ("wols_ca/keys/public", 1),
-            ("wols_ca/admin/password_ack", 1),
-            ("wols_ca/trigger/#", 1),
-            ("wols_ca/keys/raw_bytes", 1),
-            ("wols_ca/uploader/required_version", 1),
-            ("wols_ca/admin/command/#", 1),
-            ("wols_ca/admin/set_secret/#", 1)
+            ("wols_ca_mqtt/keys/public", 1),
+            ("wols_ca_mqtt/admin/password_ack", 1),
+            (get_scrambled_path(m_id, "key_rotation"), 1), # Trap 2/3 van de raket
+            (get_scrambled_path(m_id, "requests"), 1)      # Inkomende post
         ])  
         
-        client.publish("wols_ca/admin/request_key", "STARTUP_SYNC")
-        publish_version(client, current_version)
-        
-        # --- HIER WORDT HET DASHBOARD GEBOUWD BIJ OPSTARTEN ---
+        # 2. Vraag de eerste sleutel aan (Bootstrap)
+        client.publish("wols_ca_mqtt/admin/request_key", "STARTUP_SYNC")
         publish_dashboard_discovery(client)
-    else:
-        logging.error(f"Connection failed with result code {reason_code}")
-
-def on_message(client, userdata, msg):
-    if not handle_mqtt_message(client, msg, current_version):
-        logging.debug(f"No specific handler for topic: {msg.topic}")
-
-def publish_version(client, version):
-    client.publish("wols_ca/uploader/version", version, retain=True)
-
-def log_start_banner(version, broker, port, user, topic):
-    border = "*" * 80
-    logging.info(border)
-    logging.info("WOLS CA Uploader - MQTT Client for Home Assistant Add-on")
-    logging.info(border)
-    logging.info(f"Version  : {version}")
-    logging.info(f"Broker   : {broker}")
-    logging.info(f"Port     : {port}")
-    logging.info(f"User     : {user}") 
-    logging.info(f"Topic    : {topic}")
-    logging.info(border)
 
 def main():
     global current_version
     try:
-        current_version = get_version_from_yaml()
-        broker, port, user, password, topic = get_mqtt_settings()
+        current_version = "0.1.6" # Voorbeeld
+        config_file = "/data/options.json"
+        with open(config_file, 'r') as f:
+            options = json.load(f)
 
-        log_start_banner(current_version, broker, port, user, topic)
+        broker = options.get("mqtt_broker", "localhost")
+        port = options.get("mqtt_port", 1883)
+        user = options.get("mqtt_user")
+        password = options.get("mqtt_password") or get_secret("mqtt_password")
         
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        set_mqtt_credentials(user, password)
         
+        # Gebruik API v2 met userdata voor connect callback
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata={'options': options})
         if user and password:
             client.username_pw_set(user, password)
-            
-        death_payload = json.dumps({"status": "offline", "version": current_version})
-        client.will_set("wols_ca/uploader/status", payload=death_payload, qos=1, retain=True)
 
         client.on_connect = on_connect
-        client.on_message = on_message
-        client.reconnect_delay_set(min_delay=1, max_delay=60)
+        client.on_message = lambda c, u, m: handle_mqtt_message(c, m, current_version)
         
-        logging.info(f"Attempting connection to {broker}...")
+        logging.info(f"Connecting to {broker} via Mailbox {options.get('WolsCA_MailboxID', '88889999')}...")
         client.connect(broker, port, 60)
 
-        start_heartbeat(client) 
-        
+        start_heartbeat(client, options.get("WolsCA_MailboxID", "88889999")) 
         client.loop_forever()
         
-    except Exception:
-        logging.error("FATAL ERROR during startup:")
-        logging.error(traceback.format_exc())
+    except Exception as e:
+        logging.error(f"FATAL: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
