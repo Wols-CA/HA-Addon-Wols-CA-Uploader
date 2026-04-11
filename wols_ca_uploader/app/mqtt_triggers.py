@@ -178,30 +178,52 @@ class MQTTMessageRouter:
         }
         self._send_config_response(client, "HAServiceSettings", data)
 
+    def _send_seawater_details(self, client):
+        """Haalt SeaWater posities op en stuurt ze versleuteld naar de Service."""
+        options = self._get_options()
+        if not options.get("SeaWaterEnabled", False):
+            self._send_config_response(client, "SeaWaterDetails", {"Enabled": False})
+            return
+
+        # Haal de waarden op uit secrets.yaml zodat ze toegankelijk zijn voor HA [cite: 2026-04-09]
+        num_sensors = int(options.get("SeaWaterNumber", 0))
+        posities = []
+        for i in range(1, num_sensors + 1):
+            val = secrets_handler.get_secret(f"Position{i}")
+            if val is not None:
+                posities.append({"id": i, "value": val})
+
+        payload = {
+            "Enabled": True,
+            "Sensors": posities,
+            "Timestamp": int(time.time())
+        }
+        
+        self._send_config_response(client, "SeaWaterDetails", payload)
+
     def _send_spotify_details(self, client):
+        """Stuurt Spotify configuratie versleuteld door."""
         options = self._get_options()
         if not options.get("SpotifyEnabled", False):
             self._send_config_response(client, "SpotifyDetails", {"Enabled": False})
             return
 
         sets = []
-        for i in range(1, int(options.get("PlaylistSets", 0)) + 1):
-            src, tgt = secrets_handler.get_secret(f"SourceID{i}"), secrets_handler.get_secret(f"TargetID{i}")
+        num_sets = int(options.get("PlaylistSets", 0))
+        for i in range(1, num_sets + 1):
+            src = secrets_handler.get_secret(f"SourceID{i}")
+            tgt = secrets_handler.get_secret(f"TargetID{i}")
+            tm  = secrets_handler.get_secret(f"PlayTime{i}")
             if src and tgt:
-                sets.append({"source": src, "target": tgt, "play_time": secrets_handler.get_secret(f"PlayTime{i}")})
+                sets.append({"source": src, "target": tgt, "play_time": tm})
 
-        self._send_config_response(client, "SpotifyDetails", {"Enabled": True, "Sets": sets})
-
-    def _send_seawater_details(self, client):
-        options = self._get_options()
-        if not options.get("SeaWaterEnabled", False):
-            self._send_config_response(client, "SeaWaterDetails", {"Enabled": False})
-            return
-
-        pos = [secrets_handler.get_secret(f"Position{i}") for i in range(1, int(options.get("SeaWaterNumber", 0)) + 1)]
-        pos = [p for p in pos if p] # Filter lege posities
-
-        self._send_config_response(client, "SeaWaterDetails", {"Enabled": True, "Positions": pos})
+        payload = {
+            "Enabled": True, 
+            "Sets": sets,
+            "Timestamp": int(time.time())
+        }
+        
+        self._send_config_response(client, "SpotifyDetails", payload)
 
 def handle_mqtt_message(client, msg, uploader_version):
     global _router_instance
