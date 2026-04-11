@@ -92,7 +92,9 @@ class MQTTMessageRouter:
                 self.logger.info("🚀 Successfully loaded secure structure")
                 return True
 
-        if topic in ["wols_ca_mqtt/keys/public", "wols_ca_mqtt/admin/password_ack", "wols_ca/keys/public"]:
+        if topic in ["wols_ca_mqtt/keys/public", 
+                     "wols_ca_mqtt/admin/password_ack", 
+                     "wols_ca_mqtt/keys/public"]:
             self._handle_handshake(client, topic, payload_str, msg)
             return True
 
