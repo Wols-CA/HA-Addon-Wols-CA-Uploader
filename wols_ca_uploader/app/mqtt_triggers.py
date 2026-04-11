@@ -18,31 +18,38 @@ def set_mqtt_credentials(user, password):
     active_mqtt_password = password
 
 def publish_dashboard_discovery(client):
-    """Herstelt de ontbrekende discovery functie voor Home Assistant."""
-    device_info = {
-        "identifiers": ["wols_ca_vault"],
-        "name": "wols_ca Configuration Vault",
-        "manufacturer": "Wols CA"
-    }
-
-    buttons = {
-        "SpotifyReload": ("wols_ca_mqtt/admin/command/SpotifyReload", "mdi:reload"),
-        "SpotifyReset": ("wols_ca_mqtt/admin/command/SpotifyReset", "mdi:delete-alert"),
-        "SeaWaterReload": ("wols_ca_mqtt/admin/command/SeaWaterReload", "mdi:reload"),
-        "SeaWaterReset": ("wols_ca_mqtt/admin/command/SeaWaterReset", "mdi:delete-alert")
-    }
+    # In mqtt_triggers.py -> publish_dashboard_discovery
+    m_id = options.get("WolsCA_MailboxID", "88889999")
+    sw_mailbox = get_scrambled_path(m_id, "SeaWaterDetails")
     
-    for btn_name, (cmd_topic, icon) in buttons.items():
-        payload = {
-            "name": btn_name,
-            "unique_id": f"wols_ca_btn_{btn_name}",
-            "icon": icon,
-            "command_topic": cmd_topic,
-            "payload_press": "PRESS",
-            "device": device_info
-        }
-        client.publish(f"homeassistant/button/wols_ca/{btn_name}/config", json.dumps(payload), retain=True)
+    # Gebruik de helper om het troebele pad voor configuratie te vinden [cite: 2026-04-09]
+    base_mailbox = _router_instance._get_scrambled_path("SeaWaterDetails")
 
+    # Maak 100 invulvelden (Text entities) aan in HA [cite: 2026-04-09]
+    for i in range(1, 101): # Altijd 100 velden zichtbaar maken
+        payload = {
+            "name": f"SW Position {i}",
+            "unique_id": f"wols_ca_sw_pos_{i}",
+            "command_topic": f"{sw_mailbox}/set/Position{i}",
+            "state_topic": f"{sw_mailbox}/state/Position{i}",
+            "device": {"identifiers": ["wols_ca_seawater"], "name": "Wols CA SeaWater"}
+        }
+        client.publish(f"homeassistant/text/wols_ca/sw_pos_{i}/config", json.dumps(payload), retain=True))
+
+        # In mqtt_triggers.py -> publish_dashboard_discovery
+        spot_mailbox = get_scrambled_path(m_id, "SpotifyDetails")
+
+        for i in range(1, 25): # Altijd 24 sets beschikbaar maken
+            for field in ["SourceID", "TargetID", "PlayTime"]:
+                payload = {
+                    "name": f"Spotify {field} {i}",
+                    "unique_id": f"wols_ca_spot_{field.lower()}_{i}",
+                    "command_topic": f"{spot_mailbox}/set/{field}{i}",
+                    "state_topic": f"{spot_mailbox}/state/{field}{i}",
+                    "device": {"identifiers": ["wols_ca_spotify"], "name": "Wols CA Spotify"}
+                }
+                client.publish(f"homeassistant/text/wols_ca/spot_{field.lower()}_{i}/config", json.dumps(payload), retain=True)
+                
 class MQTTMessageRouter:
     def __init__(self, uploader_version):
         self.uploader_version = uploader_version
