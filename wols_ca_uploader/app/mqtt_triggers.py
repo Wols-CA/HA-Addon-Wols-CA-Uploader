@@ -1,446 +1,185 @@
-#include "include/GlobalUtilities.hpp"
-#include "include/ApplicationContext.hpp"
-#include "include/ConfigManager.hpp"
-#include "include/ModuleManager.hpp"
-#include "include/MqttModule.hpp"
-#include <algorithm>
-#include <chrono>
-#include <cpr/cpr.h>
-#include <ctime>
-#include <iomanip>
-#include <iostream>
-#include <memory>
-#include <nlohmann/json.hpp>
-#include <openssl/bio.h>
-#include <openssl/err.h>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/rsa.h>
-#include <openssl/sha.h> // Toegevoegd voor SHA256
-#include <sstream>
-#include <unordered_map>
+import json
+import logging
+import os
+import time
+import hashlib
 
-#ifdef _WIN32
-#include <winsock2.h>
-#pragma comment( lib, "ws2_32.lib" )
-#else
-#include <limits.h>
-#include <unistd.h>
-#endif
+# Local imports
+import secrets_handler
+import public_key_handler
 
-namespace GlobalUtils
-{
+active_mqtt_user = None
+active_mqtt_password = None
+last_sent_config = {}
 
-static int s_logModus = 1;
+def set_mqtt_credentials(user, password):
+    global active_mqtt_user, active_mqtt_password
+    active_mqtt_user = user
+    active_mqtt_password = password
 
-std::string SetLogModus( const int log_mode )
-{
-    s_logModus = log_mode;
-    return "Log modus updated to " + std::to_string( log_mode );
-}
+class MQTTMessageRouter:
+    def __init__(self, uploader_version):
+        self.uploader_version = uploader_version
+        self.logger = logging.getLogger(__name__)
+        self._cached_options = {}
+        self._options_last_read = 0
+        self._options_cache_ttl = 300 
+        self.topic_map = {}
 
-// --- Hashing & Mailbox Logic ---
+    def _get_options(self):
+        current_time = time.time()
+        if current_time - self._options_last_read > self._options_cache_ttl:
+            options_file = "/data/options.json"
+            if os.path.exists(options_file):
+                try:
+                    with open(options_file, "r") as f:
+                        self._cached_options = json.load(f)
+                    self._options_last_read = current_time
+                except Exception as e:
+                    self.logger.error(f"Error reading options.json: {e}")
+            else:
+                self._cached_options = {}
+        return self._cached_options
 
-std::string Sha256( const std::string &input )
-{
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256_CTX    sha256;
-    SHA256_Init( &sha256 );
-    SHA256_Update( &sha256, input.c_str(), input.size() );
-    SHA256_Final( hash, &sha256 );
+    def _get_scrambled_path(self, sub_topic):
+        """Berekent het 'troebele' pad volgens de Wols CA standaard."""
+        options = self._get_options()
+        mailbox_id = options.get("WolsCA_MailboxID", "88889999")
+        
+        # Gebruik de eerste 16 karakters van de SHA256 hex digest
+        mb_hash = hashlib.sha256(mailbox_id.encode()).hexdigest()[:16]
+        sub_hash = hashlib.sha256(sub_topic.encode()).hexdigest()[:16]
+        
+        return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
 
-    std::stringstream ss;
-    // We gebruiken de eerste 8 bytes (16 karakters) voor een compact maar veilig topic [cite: 2026-04-09]
-    for ( int i = 0; i < 8; i++ )
-    {
-        ss << std::hex << std::setw( 2 ) << std::setfill( '0' ) << static_cast<int>( hash[i] );
-    }
-    return ss.str();
-}
+    def route_message(self, client, msg):
+        topic = msg.topic
+        try:
+            # Veiligere check voor payload
+            if not msg.payload:
+                return False
+                
+            payload_str = msg.payload.decode().strip()
+            data = json.loads(payload_str) if payload_str.startswith('{') else None
+        except Exception:
+            # Als het geen JSON is maar een PEM key, gaat dit goed via handle_handshake
+            payload_str = msg.payload.decode().strip() if msg.payload else ""
+            data = None
 
-std::string GetMailboxPath( const std::string &mailboxId, const std::string &subTopic )
-{
-    // Uniform pad volgens Wols CA standaard: wols_ca_mqtt/mb/[hashed_id]/[hashed_topic] [cite: 2026-04-09]
-    return "wols_ca_mqtt/mb/" + Sha256( mailboxId ) + "/" + Sha256( subTopic );
-}
+        # 1. Check op 'topic_structure'
+        structure_hash = hashlib.sha256("topic_structure".encode()).hexdigest()[:16]
+        if topic.endswith(structure_hash):
+            if data and data.get("instance_name") == "ha_service_uploader":
+                self.topic_map = {m['id']: m['topic'] for m in data['modules']}
+                self.logger.info("🚀 Successfully loaded secure structure: ha_service_uploader")
+                return True
 
-// --- Bestaande Functies ---
+        # 2. Handshake & Security
+        if topic in ["wols_ca_mqtt/keys/public", "wols_ca_mqtt/admin/password_ack", "wols_ca/keys/public"]:
+            self._handle_handshake(client, topic, payload_str, msg)
+            return True
 
-std::string MinutesToTimestamp( const TimeConversionParams *params )
-{
-    if ( params == nullptr )
-    {
-        return "00:00";
-    }
+        return False
 
-    int hours            = params->minutes / 60;
-    int remainingMinutes = params->minutes % 60;
+    def _handle_handshake(self, client, topic, payload, msg):
+        if "keys/public" in topic:
+            public_key_handler.handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password)
+        elif "password_ack" in topic:
+            if payload == "ACK":
+                self.logger.info("🚀 SECURE HANDSHAKE SUCCESS")
+                public_key_handler.promote_temp_key()
+                
+                # Na succes: Abonneer op de beveiligde brievenbus
+                inbox = self._get_scrambled_path("inbox")
+                client.subscribe(inbox, 1)
+                
+                self._send_ha_service_settings(client)
+                self._send_spotify_details(client)
+                self._send_seawater_details(client)
 
-    std::ostringstream oss;
-    oss << std::setfill( '0' ) << std::setw( 2 ) << hours << ":"
-        << std::setfill( '0' ) << std::setw( 2 ) << remainingMinutes;
+    def _send_config_response(self, client, key, data):
+        options = self._get_options()
+        uploader_name = options.get("WolsCA_UploaderName", "ha_uploader_main")
+        service_id = options.get("WolsCA_ServiceID", "unknown_service")
 
-    return oss.str();
-}
-
-std::string MyIsoTimeStampNow()
-{
-    std::string tz = "Europe/Amsterdam";
-
-    if ( theAppContext && theAppContext->config )
-    {
-        std::string configTz = theAppContext->config->GetString( ConfigKey::LocalTimeZone );
-        if ( !configTz.empty() )
-        {
-            tz = configTz;
+        envelope = {
+            "header": {
+                "from": uploader_name,
+                "to": service_id.lower().replace(" ", "_"),
+                "timestamp": int(time.time()),
+                "msg_type": "config_update",
+                "encrypted": public_key_handler.is_public_key_active()
+            },
+            "payload": data
         }
-    }
 
-#ifdef _WIN32
-    _putenv_s( "TZ", tz.c_str() );
-    _tzset();
-#else
-    setenv( "TZ", tz.c_str(), 1 );
-    tzset();
-#endif
+        topic = self._get_scrambled_path(key)
+        client.publish(topic, json.dumps(envelope), retain=False)
 
-    std::time_t t = std::time( nullptr );
-    std::tm     buf{};
-#ifdef _WIN32
-    localtime_s( &buf, &t );
-#else
-    localtime_r( &t, &buf );
-#endif
-
-    char ts[32];
-    std::strftime( ts, sizeof( ts ), "%Y-%m-%dT%H:%M:%S", &buf );
-
-    char offset[8];
-    std::strftime( offset, sizeof( offset ), "%z", &buf );
-    std::string off( offset );
-    if ( off.length() == 5 )
-    {
-        off.insert( 3, ":" );
-    }
-
-    return std::string( ts ) + off;
-}
-
-std::string GetCurrentDate()
-{
-    std::time_t t = std::time( nullptr );
-    std::tm     buf{};
-#ifdef _WIN32
-    localtime_s( &buf, &t );
-#else
-    localtime_r( &t, &buf );
-#endif
-
-    char ts[16];
-    std::strftime( ts, sizeof( ts ), "%Y-%m-%d", &buf );
-    return std::string( ts );
-}
-
-void LogToConsole( const std::string &moduleName, const std::string &message )
-{
-    if ( s_logModus == 0 )
-    {
-        return;
-    }
-    LogToConsoleNoLock( moduleName, message );
-}
-
-void LogToConsoleNoLock( const std::string &moduleName, const std::string &message )
-{
-    if ( s_logModus == 0 )
-    {
-        return;
-    }
-
-    if ( s_logModus == 2 )
-    {
-        if ( message.find( "Error" ) == std::string::npos && moduleName != "CRITICAL" )
-        {
-            return;
+    def _send_ha_service_settings(self, client):
+        options = self._get_options()
+        data = {
+            "BrokerURL": options.get("mqtt_broker", ""),
+            "MqttUser": active_mqtt_user,
+            "MqttPassword": active_mqtt_password,
+            "ConsoleToMqtt": options.get("ConsoleToMqtt", False),
+            "LogModus": options.get("LogModus", "INFO"),
+            "RefreshMinutes": options.get("RefreshMinutes", 45),
+            "MailboxID": options.get("WolsCA_MailboxID", "88889999")
         }
-    }
+        self._send_config_response(client, "HAServiceSettings", data)
 
-    if ( theAppContext && theAppContext->config && theAppContext->config->GetBool( ConfigKey::ConsoleToMqtt ) )
-    {
-        if ( theAppContext->mqtt && theAppContext->mqtt->IsActive() )
-        {
-            if ( theAppContext->mqtt->PublishLog( message, moduleName, MyIsoTimeStampNow() ) )
-            {
-                return;
-            }
+    def _send_spotify_details(self, client, force_empty=False):
+        options = self._get_options()
+        enabled = options.get("SpotifyEnabled", False)
+        if not enabled or force_empty:
+            self._send_config_response(client, "SpotifyDetails", {"Enabled": False})
+            return
+
+        playlist_sets = []
+        max_sets = int(options.get("PlaylistSets", 0))
+        for i in range(1, max_sets + 1):
+            source = secrets_handler.get_secret(f"SourceID{i}")
+            target = secrets_handler.get_secret(f"TargetID{i}")
+            if source and target:
+                playlist_sets.append({
+                    "source": source, "target": target,
+                    "play_time": secrets_handler.get_secret(f"PlayTime{i}")
+                })
+
+        data = {
+            "Enabled": True,
+            "Automate": options.get("SpotifyAutomate", False),
+            "ClientID": secrets_handler.get_secret("SpotifyClientID"),
+            "ClientSecret": secrets_handler.get_secret("ClientIDSecret"),
+            "Sets": playlist_sets
         }
-    }
+        self._send_config_response(client, "SpotifyDetails", data)
 
-    std::cout << "[" << MyIsoTimeStampNow() << "][" << moduleName << "] " << message << std::endl;
-}
+    def _send_seawater_details(self, client, force_empty=False):
+        options = self._get_options()
+        enabled = options.get("SeaWaterEnabled", False)
+        if not enabled or force_empty:
+            self._send_config_response(client, "SeaWaterDetails", {"Enabled": False})
+            return
 
-std::string ToLower( const std::string &input )
-{
-    std::string result = input;
-    std::transform( result.begin(), result.end(), result.begin(),
-                    []( unsigned char c )
-                    { return static_cast<char>( std::tolower( c ) ); } );
-    return result;
-}
+        positions = []
+        max_pos = int(options.get("SeaWaterNumber", 0))
+        for i in range(1, max_pos + 1):
+            pos = secrets_handler.get_secret(f"Position{i}")
+            if pos: positions.append(pos)
 
-std::string SanitizeTopic( const std::string &input )
-{
-    std::string result = ToLower( input );
-
-    for ( char &c : result )
-    {
-        if ( c == '-' || c == ' ' )
-        {
-            c = '_';
+        data = {
+            "Enabled": True,
+            "SensorInterval": int(options.get("SensorInterval", 30)),
+            "Positions": positions
         }
-    }
-    return result;
-}
+        self._send_config_response(client, "SeaWaterDetails", data)
 
-std::string RemoveSpaces( const std::string &input )
-{
-    std::string result = input;
-    result.erase( std::remove( result.begin(), result.end(), ' ' ), result.end() );
-    return result;
-}
+def handle_mqtt_message(client, msg, uploader_version):
+    global _router_instance
+    if _router_instance is None:
+        _router_instance = MQTTMessageRouter(uploader_version)
+    return _router_instance.route_message(client, msg)
 
-std::string GetLocationNameFromCoordinates( const std::string &lat, const std::string &lon )
-{
-    std::string   url      = "https://nominatim.openstreetmap.org/reverse?format=json&lat=" + lat + "&lon=" + lon + "&zoom=10";
-    cpr::Response response = cpr::Get( cpr::Url{ url }, cpr::Header{ { "User_Agent", "Wols_CA_HomeAssistant/1.0" } }, cpr::Timeout{ 5000 } );
-
-    if ( response.status_code == 200 )
-    {
-        try
-        {
-            auto j = nlohmann::json::parse( response.text );
-            if ( j.contains( "address" ) )
-            {
-                std::string city = "";
-                if ( j["address"].contains( "city" ) )
-                {
-                    city = j["address"]["city"];
-                }
-                else if ( j["address"].contains( "town" ) )
-                {
-                    city = j["address"]["town"];
-                }
-                else if ( j["address"].contains( "village" ) )
-                {
-                    city = j["address"]["village"];
-                }
-                else if ( j["address"].contains( "county" ) )
-                {
-                    city = j["address"]["county"];
-                }
-
-                std::string country = j["address"].value( "country", "Unknown" );
-
-                if ( !city.empty() )
-                {
-                    return city + ", " + country;
-                }
-                else
-                {
-                    return country;
-                }
-            }
-        }
-        catch ( ... )
-        {
-            LogToConsole( "GeoLocation", "Error parsing OpenStreetMap JSON." );
-        }
-    }
-    return "Unknown Location";
-}
-
-bool GenerateRsaKeyPair( std::string &outPublicKey, std::string &outPrivateKey )
-{
-    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id( EVP_PKEY_RSA, nullptr );
-    if ( !ctx )
-    {
-        return false;
-    }
-
-    if ( EVP_PKEY_keygen_init( ctx ) <= 0 || EVP_PKEY_CTX_set_rsa_keygen_bits( ctx, 2048 ) <= 0 )
-    {
-        EVP_PKEY_CTX_free( ctx );
-        return false;
-    }
-
-    EVP_PKEY *pkey = nullptr;
-    if ( EVP_PKEY_keygen( ctx, &pkey ) <= 0 )
-    {
-        EVP_PKEY_CTX_free( ctx );
-        return false;
-    }
-
-    BIO *priBio = BIO_new( BIO_s_mem() );
-    PEM_write_bio_PrivateKey( priBio, pkey, nullptr, nullptr, 0, nullptr, nullptr );
-    size_t priLen = static_cast<size_t>( BIO_pending( priBio ) );
-    outPrivateKey.resize( priLen );
-    BIO_read( priBio, &outPrivateKey[0], static_cast<int>( priLen ) );
-    BIO_free_all( priBio );
-
-    BIO *pubBio = BIO_new( BIO_s_mem() );
-    PEM_write_bio_PUBKEY( pubBio, pkey );
-    size_t pubLen = static_cast<size_t>( BIO_pending( pubBio ) );
-    outPublicKey.resize( pubLen );
-    BIO_read( pubBio, &outPublicKey[0], static_cast<int>( pubLen ) );
-    BIO_free_all( pubBio );
-
-    EVP_PKEY_free( pkey );
-    EVP_PKEY_CTX_free( ctx );
-    return true;
-}
-
-std::string Base64Decode( const std::string &encoded )
-{
-    BIO *bio = BIO_new_mem_buf( encoded.data(), static_cast<int>( encoded.size() ) );
-    BIO *b64 = BIO_new( BIO_f_base64() );
-    bio      = BIO_push( b64, bio );
-    BIO_set_flags( bio, BIO_FLAGS_BASE64_NO_NL );
-
-    std::string decoded( encoded.size(), '\0' );
-    int         len = BIO_read( bio, &decoded[0], static_cast<int>( encoded.size() ) );
-    BIO_free_all( bio );
-
-    if ( len < 0 )
-    {
-        throw std::runtime_error( "Base64 decode failed" );
-    }
-    decoded.resize( len );
-    return decoded;
-}
-
-std::string RsaPrivateDecrypt( const std::string &privateKeyPem, const std::string &encryptedData )
-{
-    if ( encryptedData.empty() || privateKeyPem.empty() )
-    {
-        return "";
-    }
-
-    std::string rawEncryptedBytes;
-    try
-    {
-        rawEncryptedBytes = Base64Decode( encryptedData );
-    }
-    catch ( ... )
-    {
-        return "";
-    }
-
-    BIO      *bio  = BIO_new_mem_buf( privateKeyPem.data(), -1 );
-    EVP_PKEY *pkey = PEM_read_bio_PrivateKey( bio, nullptr, nullptr, nullptr );
-    BIO_free_all( bio );
-
-    if ( !pkey )
-    {
-        return "";
-    }
-
-    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new( pkey, nullptr );
-    if ( !ctx )
-    {
-        EVP_PKEY_free( pkey );
-        return "";
-    }
-
-    if ( EVP_PKEY_decrypt_init( ctx ) <= 0 ||
-         EVP_PKEY_CTX_set_rsa_padding( ctx, RSA_PKCS1_OAEP_PADDING ) <= 0 ||
-         EVP_PKEY_CTX_set_rsa_oaep_md( ctx, EVP_sha256() ) <= 0 ||
-         EVP_PKEY_CTX_set_rsa_mgf1_md( ctx, EVP_sha256() ) <= 0 )
-    {
-        EVP_PKEY_CTX_free( ctx );
-        EVP_PKEY_free( pkey );
-        return "";
-    }
-
-    size_t outlen = 0;
-
-    if ( EVP_PKEY_decrypt( ctx, nullptr, &outlen, reinterpret_cast<const unsigned char *>( rawEncryptedBytes.data() ), static_cast<int>( rawEncryptedBytes.size() ) ) <= 0 )
-    {
-        EVP_PKEY_CTX_free( ctx );
-        EVP_PKEY_free( pkey );
-        return "";
-    }
-
-    std::string decrypted( outlen, '\0' );
-
-    if ( EVP_PKEY_decrypt( ctx, reinterpret_cast<unsigned char *>( &decrypted[0] ), &outlen, reinterpret_cast<const unsigned char *>( rawEncryptedBytes.data() ), static_cast<int>( rawEncryptedBytes.size() ) ) <= 0 )
-    {
-        EVP_PKEY_CTX_free( ctx );
-        EVP_PKEY_free( pkey );
-        return "";
-    }
-
-    decrypted.resize( outlen );
-    EVP_PKEY_CTX_free( ctx );
-    EVP_PKEY_free( pkey );
-    return decrypted;
-}
-
-std::string FetchHostName()
-{
-    char hostname[256];
-    if ( gethostname( hostname, sizeof( hostname ) ) == 0 )
-    {
-        return std::string( hostname );
-    }
-    return "UnknownHost";
-}
-
-bool IsItTime( const ScheduledTimeParams *params )
-{
-    if ( !params )
-    {
-        return false;
-    }
-
-    std::time_t t = std::time( nullptr );
-    std::tm     nowBuf{};
-#ifdef _WIN32
-    localtime_s( &nowBuf, &t );
-#else
-    localtime_r( &t, &nowBuf );
-#endif
-
-    return ( nowBuf.tm_hour == params->targetHour && nowBuf.tm_min == params->targetMinute );
-}
-
-std::string ExportPublicKeyPem( EVP_PKEY *pkey )
-{
-    if ( !pkey )
-    {
-        return "";
-    }
-    BIO *bio = BIO_new( BIO_s_mem() );
-    PEM_write_bio_PUBKEY( bio, pkey );
-    size_t      len = static_cast<size_t>( BIO_pending( bio ) );
-    std::string pem( len, '\0' );
-    BIO_read( bio, &pem[0], static_cast<int>( len ) );
-    BIO_free_all( bio );
-    return pem;
-}
-
-std::string ExportPrivateKeyPem( EVP_PKEY *pkey )
-{
-    if ( !pkey )
-    {
-        return "";
-    }
-    BIO *bio = BIO_new( BIO_s_mem() );
-    PEM_write_bio_PrivateKey( bio, pkey, nullptr, nullptr, 0, nullptr, nullptr );
-    size_t      len = static_cast<size_t>( BIO_pending( bio ) );
-    std::string pem( len, '\0' );
-    BIO_read( bio, &pem[0], static_cast<int>( len ) );
-    BIO_free_all( bio );
-    return pem;
-}
-
-} // namespace GlobalUtils
+_router_instance = None
