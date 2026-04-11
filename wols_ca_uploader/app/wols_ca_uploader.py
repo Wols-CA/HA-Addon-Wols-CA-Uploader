@@ -63,11 +63,11 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         options = userdata.get('options', {})
         m_id = options.get("WolsCA_MailboxID", "88889999")
 
-        # 1. Subscribe op de 'Troebele' kanalen
+        # 1. Subscribe op de 'Troebele' kanalen én de Wols CA Handshake
         client.subscribe([
             ("wols_ca_mqtt/keys/public", 1),
+            ("wols_ca_mqtt/admin/service_verify", 1), # <-- DEZE ONTBRAK! (Voor Step C)
             ("wols_ca_mqtt/admin/password_ack", 1),
-            ("wols_ca_mqtt/admin/encrypted_credentials", 1),
             (get_scrambled_path_helper(m_id, "key_rotation"), 1),
             (get_scrambled_path_helper(m_id, "requests"), 1)
         ])  
