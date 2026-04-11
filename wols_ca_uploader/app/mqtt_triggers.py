@@ -191,5 +191,11 @@ class MQTTMessageRouter:
         self._send_config_response(client, "SeaWaterDetails", data)
 
 def handle_mqtt_message(client, msg, uploader_version):
+    """Verwerkt inkomende MQTT berichten via de router instantie."""
     global _router_instance
     if _router_instance is None:
+        _router_instance = MQTTMessageRouter(uploader_version)
+    return _router_instance.route_message(client, msg)
+
+# Initialiseer de globale instantie op None
+_router_instance = None
