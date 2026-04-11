@@ -1,7 +1,7 @@
-name: "Wols-CA MQTT Automation Uploader"
-version: "0.1.4"
+name: "Wols CA MQTT Automation Uploader"
+version: "0.1.5"
 slug: "wols_ca_uploader"
-description: "Secure Vault and Uploader for Wols-CA C++ services"
+description: "Secure Vault and Uploader for Wols CA C++ services"
 arch:
   - aarch64
   - amd64

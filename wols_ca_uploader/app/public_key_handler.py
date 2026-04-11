@@ -43,7 +43,7 @@ def handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password):
                 
                 # 5. Encrypt and send
                 logging.info("Sending encrypted JSON credentials to backend...")
-                send_encrypted_payload(client, "wols-ca/admin/encrypted_credentials", json_string)
+                send_encrypted_payload(client, "wols_ca/admin/encrypted_credentials", json_string)
             else:
                 logging.error("Active credentials are missing. Cannot send handshake response.")
         else:

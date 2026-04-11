@@ -21,16 +21,16 @@ def publish_dashboard_discovery(client):
     """Creates secure trigger buttons in Home Assistant via MQTT Discovery"""
     device_info = {
         "identifiers": ["wols_ca_vault"],
-        "name": "Wols-CA Configuration Vault",
+        "name": "wols_ca Configuration Vault",
         "manufacturer": "Wols"
     }
 
     # Create Reload and Factory Reset buttons (The Triggers)
     buttons = {
-        "SpotifyReload": ("wols-ca/admin/command/SpotifyReload", "mdi:reload"),
-        "SpotifyReset": ("wols-ca/admin/command/SpotifyReset", "mdi:delete-alert"),
-        "SeaWaterReload": ("wols-ca/admin/command/SeaWaterReload", "mdi:reload"),
-        "SeaWaterReset": ("wols-ca/admin/command/SeaWaterReset", "mdi:delete-alert")
+        "SpotifyReload": ("wols_ca/admin/command/SpotifyReload", "mdi:reload"),
+        "SpotifyReset": ("wols_ca/admin/command/SpotifyReset", "mdi:delete-alert"),
+        "SeaWaterReload": ("wols_ca/admin/command/SeaWaterReload", "mdi:reload"),
+        "SeaWaterReset": ("wols_ca/admin/command/SeaWaterReset", "mdi:delete-alert")
     }
     
     for btn_name, (cmd_topic, icon) in buttons.items():
@@ -82,7 +82,7 @@ class MQTTMessageRouter:
             return False
 
         # 1. Routing: Handshake & Security Lifecycle
-        if topic in ["wols-ca/keys/public", "wols-ca/keys/raw_bytes", "wols-ca/admin/password_ack"]:
+        if topic in ["wols_ca/keys/public", "wols_ca/keys/raw_bytes", "wols_ca/admin/password_ack"]:
             self._handle_handshake(client, topic, payload, msg)
             return True
 
@@ -92,12 +92,12 @@ class MQTTMessageRouter:
             return True
             
         # 3. Routing: Secrets Requests (From C++)
-        elif topic.startswith("wols-ca/secrets/request/"):
+        elif topic.startswith("wols_ca/secrets/request/"):
             self._handle_secret_request(client, topic)
             return True
 
         # 4. Routing: Commands (Reload / Factory Reset)
-        elif topic.startswith("wols-ca/admin/command/"):
+        elif topic.startswith("wols_ca/admin/command/"):
             command = topic.split("/")[-1]
             
             if command == "SpotifyReload":
@@ -113,7 +113,7 @@ class MQTTMessageRouter:
                 for i in range(1, 25):
                     for field in [f"SourceID{i}", f"TargetID{i}", f"PlayTime{i}"]:
                         secrets_handler.update_secret(field, "")
-                        client.publish(f"wols-ca/admin/state/{field}", "", retain=True)
+                        client.publish(f"wols_ca/admin/state/{field}", "", retain=True)
                 # Send empty config to C++
                 self._send_spotify_details(client, force_empty=True)
 
@@ -121,40 +121,40 @@ class MQTTMessageRouter:
                 self.logger.warning("FACTORY RESET TRIGGERED FOR SEA WATER!")
                 for i in range(1, 101):
                     secrets_handler.update_secret(f"Position{i}", "")
-                    client.publish(f"wols-ca/admin/state/Position{i}", "", retain=True)
+                    client.publish(f"wols_ca/admin/state/Position{i}", "", retain=True)
                 # Send empty config to C++
                 self._send_seawater_details(client, force_empty=True)
             return True
 
         # 5. Routing: System & Version Control
-        elif topic == "wols-ca/uploader/required_version":
+        elif topic == "wols_ca/uploader/required_version":
             self._handle_version_check(payload)
             return True
             
         elif topic in [
-            "wols-ca/uploader/version", 
-            "wols-ca/uploader/status", 
-            "wols-ca/admin/request_key", 
-            "wols-ca/admin/encrypted_credentials"
+            "wols_ca/uploader/version", 
+            "wols_ca/uploader/status", 
+            "wols_ca/admin/request_key", 
+            "wols_ca/admin/encrypted_credentials"
         ]:
             return True
 
         return False
 
     def _handle_handshake(self, client, topic, payload, msg):
-        if topic in ["wols-ca/keys/public", "wols-ca/keys/raw_bytes"]:
+        if topic in ["wols_ca/keys/public", "wols_ca/keys/raw_bytes"]:
             global active_mqtt_user, active_mqtt_password
             public_key_handler.handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password)
             
-        elif topic == "wols-ca/admin/password_ack":
+        elif topic == "wols_ca/admin/password_ack":
             if payload == "ACK":
                 self.logger.info("🚀 HANDSHAKE SUCCESS: Backend verified the credentials.")
                 public_key_handler.promote_temp_key()
                 client.subscribe([
-                    ("wols-ca/trigger/#", 1),
+                    ("wols_ca/trigger/#", 1),
                     ("spotify/+/Admin/Secrets/#", 1),
-                    ("wols-ca/admin/command/#", 1),
-                    ("wols-ca/admin/set_secret/#", 1)
+                    ("wols_ca/admin/command/#", 1),
+                    ("wols_ca/admin/set_secret/#", 1)
                 ])
                 
                 # PUSH: Send all configurations to C++ unconditionally
@@ -189,7 +189,7 @@ class MQTTMessageRouter:
                 if secret_name == "MQTTPassword":
                     global active_mqtt_password
                     active_mqtt_password = secret_value
-                    client.publish("wols-ca/admin/request_key", "STARTUP_SYNC", qos=1)
+                    client.publish("wols_ca/admin/request_key", "STARTUP_SYNC", qos=1)
         except json.JSONDecodeError:
             pass
 

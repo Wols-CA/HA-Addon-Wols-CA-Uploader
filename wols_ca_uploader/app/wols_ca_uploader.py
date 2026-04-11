@@ -36,7 +36,7 @@ def start_heartbeat(client, interval=60):
                     "timestamp": int(time.time()),
                     "version": current_version
                 })
-                client.publish("wols-ca/uploader/status", payload, qos=1, retain=True)
+                client.publish("wols_ca/uploader/status", payload, qos=1, retain=True)
             time.sleep(interval)
     threading.Thread(target=heartbeat, daemon=True).start()
 
@@ -82,19 +82,19 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
             "version": current_version, 
             "timestamp": int(time.time())
         })
-        client.publish("wols-ca/uploader/status", online_payload, qos=1, retain=True)
+        client.publish("wols_ca/uploader/status", online_payload, qos=1, retain=True)
 
         client.subscribe([
-            ("wols-ca/keys/public", 1),
-            ("wols-ca/admin/password_ack", 1),
-            ("wols-ca/trigger/#", 1),
-            ("wols-ca/keys/raw_bytes", 1),
-            ("wols-ca/uploader/required_version", 1),
-            ("wols-ca/admin/command/#", 1),
-            ("wols-ca/admin/set_secret/#", 1)
+            ("wols_ca/keys/public", 1),
+            ("wols_ca/admin/password_ack", 1),
+            ("wols_ca/trigger/#", 1),
+            ("wols_ca/keys/raw_bytes", 1),
+            ("wols_ca/uploader/required_version", 1),
+            ("wols_ca/admin/command/#", 1),
+            ("wols_ca/admin/set_secret/#", 1)
         ])  
         
-        client.publish("wols-ca/admin/request_key", "STARTUP_SYNC")
+        client.publish("wols_ca/admin/request_key", "STARTUP_SYNC")
         publish_version(client, current_version)
         
         # --- HIER WORDT HET DASHBOARD GEBOUWD BIJ OPSTARTEN ---
@@ -107,7 +107,7 @@ def on_message(client, userdata, msg):
         logging.debug(f"No specific handler for topic: {msg.topic}")
 
 def publish_version(client, version):
-    client.publish("wols-ca/uploader/version", version, retain=True)
+    client.publish("wols_ca/uploader/version", version, retain=True)
 
 def log_start_banner(version, broker, port, user, topic):
     border = "*" * 80
@@ -135,7 +135,7 @@ def main():
             client.username_pw_set(user, password)
             
         death_payload = json.dumps({"status": "offline", "version": current_version})
-        client.will_set("wols-ca/uploader/status", payload=death_payload, qos=1, retain=True)
+        client.will_set("wols_ca/uploader/status", payload=death_payload, qos=1, retain=True)
 
         client.on_connect = on_connect
         client.on_message = on_message
