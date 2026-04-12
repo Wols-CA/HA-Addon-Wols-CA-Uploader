@@ -1,5 +1,5 @@
 import threading
-import web_ui
+
 import sys
 import logging
 import threading
@@ -27,6 +27,7 @@ from mqtt_triggers import (
     get_scrambled_path_helper
 )
 from secrets_handler import get_secret
+import wols_ca_web_ui
 
 current_version = "Unknown"
 
@@ -125,7 +126,7 @@ def main():
         start_heartbeat(client, mailbox_id) 
         
         # Start de Wols CA Web UI in een aparte thread op de achtergrond
-        ui_thread = threading.Thread(target=web_ui.start_web_server, daemon=True)
+        ui_thread = threading.Thread(target=wols_ca_web_ui.start_web_server, daemon=True)
         ui_thread.start()
         logging.info("the Wols CA Ingress Web UI started on port 8099.")
         
