@@ -141,4 +141,16 @@ def update_seawater():
     base_url = request.headers.get('X-Ingress-Path', '')
     return redirect(f"{base_url}/?sw_id={sw_id}&sp_id={sp_id}&msg=✅ Sea Water Positie {sw_id} opgeslagen!")
 
-@app.route('/update
+@app.route('/update_spotify', methods=['POST'])
+def update_spotify():
+    sw_id = request.form.get('sw_id')
+    sp_id = request.form.get('sp_id')
+    secrets_handler.update_secret(f"SourceID{sp_id}", request.form.get('SourceID'))
+    secrets_handler.update_secret(f"TargetID{sp_id}", request.form.get('TargetID'))
+    secrets_handler.update_secret(f"PlayTime{sp_id}", request.form.get('PlayTime'))
+    
+    base_url = request.headers.get('X-Ingress-Path', '')
+    return redirect(f"{base_url}/?sw_id={sw_id}&sp_id={sp_id}&msg=✅ Spotify Set {sp_id} opgeslagen!")
+
+def start_web_server():
+    app.run(host='0.0.0.0', port=8099, debug=False, use_reloader=False)
