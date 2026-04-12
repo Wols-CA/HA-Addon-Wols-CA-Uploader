@@ -1,5 +1,6 @@
 import threading
-
+import flask
+from flask_cors import cord
 import sys
 import logging
 import threading
