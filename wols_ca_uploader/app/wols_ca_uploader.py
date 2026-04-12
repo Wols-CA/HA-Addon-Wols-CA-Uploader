@@ -69,7 +69,8 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
             ("wols_ca_mqtt/admin/service_verify", 1), # <-- DEZE ONTBRAK! (Voor Step C)
             ("wols_ca_mqtt/admin/password_ack", 1),
             (get_scrambled_path_helper(m_id, "key_rotation"), 1),
-            (get_scrambled_path_helper(m_id, "requests"), 1)
+            (get_scrambled_path_helper(m_id, "requests"), 1),
+            (f"wols_ca_mqtt/mb/{mb_hash}/+/set/#", 1)
         ])  
         
         # 2. Vraag de eerste sleutel aan op de JUISTE root
