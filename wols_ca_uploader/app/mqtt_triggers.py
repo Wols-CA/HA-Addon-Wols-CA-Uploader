@@ -209,11 +209,26 @@ class MQTTMessageRouter:
         # Handle incoming UI commands (Set)
         if "/set/" in topic:
             field_name = topic.split("/")[-1]
+            
+            # Standaard nemen we de ruwe tekst aan
+            value_to_store = payload_str
+            
+            # WOLS CA UX FIX: Als het een SeaWater coördinaat is, poets hem direct op!
+            if "Position" in field_name:
+                parsed_val = parse_google_maps_coordinates(payload_str)
+                if parsed_val is not None:
+                    value_to_store = parsed_val
+                else:
+                    self.logger.error(f"❌ Ongeldige coördinaten invoer geweigerd: {payload_str}")
+                    # Stop hier, we sturen geen onzin naar Home Assistant of de C++ Service
+                    return True 
+
             from secrets_handler import update_secret
-            if update_secret(field_name, payload_str):
+            if update_secret(field_name, value_to_store):
                 self.logger.info(f"📍 Securely stored {field_name}")
+                # HA updaten met de (nu schone) waarde!
                 state_topic = topic.replace("/set/", "/state/")
-                client.publish(state_topic, payload_str, retain=True)
+                client.publish(state_topic, value_to_store, retain=True)
 
                 if "Position" in field_name:
                     self._send_seawater_details(client)
