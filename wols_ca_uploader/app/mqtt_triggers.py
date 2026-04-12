@@ -124,6 +124,10 @@ class MQTTMessageRouter:
             payload_str = msg.payload.decode().strip()
         except Exception:
             return False
+        
+        options = self._get_options()
+        mailbox_id = options.get("WolsCA_MailboxID", "88889999")
+        request_path = get_scrambled_path_helper(mailbox_id, "requests")
 
         # --- WOLS CA HANDSHAKE ROUTING ---
         if topic == "wols_ca_mqtt/keys/public":
@@ -141,6 +145,13 @@ class MQTTMessageRouter:
         if topic == "wols_ca_mqtt/admin/password_ack":
             import public_key_handler
             public_key_handler.handle_ack(payload_str)
+            return True
+        
+        # --- WOLS CA PULL HANDLER ---
+        if topic == request_path:
+            if "REQ_CONFIG_SEAWATER" in payload_str:
+                self.logger.info("📥 C++ Service requested SeaWater data. Resending from secrets...")
+                self._send_seawater_details(client)
             return True
 
         # --- UPLOAD SEAWATER TO HA ---
@@ -276,24 +287,21 @@ class MQTTMessageRouter:
         }
         self._send_config_response(client, "HAServiceSettings", data)
 
-    def _send_seawater_details(self, client):
-        options = self._get_options()
-        if not options.get("SeaWaterEnabled", False):
-            self._send_config_response(client, "SeaWaterDetails", {"Enabled": False})
-            return
-
-        num_sensors = int(options.get("SeaWaterNumber", 0))
+def _send_seawater_details(self, client):
+        # We halen het aantal sensoren op uit de Web UI instellingen
+        num_sensors = secrets_handler.get_secret("SeaWaterNumber")
+        if num_sensors is None:
+            num_sensors = 0
+        
+        num_sensors = int(num_sensors)
         posities = []
+        
         for i in range(1, num_sensors + 1):
             raw_val = secrets_handler.get_secret(f"Position{i}")
-            
-            # WOLS CA FIX: Gebruik de slimme filter om coördinaten schoon te poetsen
+            # Poets de coördinaten op naar digitaal voor C++
             parsed_val = parse_google_maps_coordinates(raw_val)
-            
-            if parsed_val is not None:
+            if parsed_val:
                 posities.append({"id": i, "value": parsed_val})
-            elif raw_val:
-                self.logger.error(f"❌ Ongeldig coördinaat formaat bij Position{i}: '{raw_val}'. Wordt overgeslagen ter bescherming van de C++ Service.")
 
         payload = {
             "Enabled": True,
@@ -301,6 +309,7 @@ class MQTTMessageRouter:
             "Timestamp": int(time.time())
         }
         
+        # Verstuur naar de C++ SeaWaterDetails mailbox
         self._send_config_response(client, "SeaWaterDetails", payload)
 
     def _send_spotify_details(self, client):
