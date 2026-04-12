@@ -1,10 +1,10 @@
-from flask import Flask, request, render_template_string, redirect, url_for
+from flask import Flask, request, render_template_string, redirect
 import logging
 import secrets_handler
 
 app = Flask(__name__)
 
-# Wols CA Dynamisch Design met ID-selectie
+# Wols CA Dynamisch Design (Met Ingress-veilige relatieve URL's)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="nl">
@@ -35,7 +35,7 @@ HTML_TEMPLATE = """
     <div class="flex-row">
         <div class="flex-col card">
             <h2>🌊 Sea Water Configuratie</h2>
-            <form method="POST" action="/update_system">
+            <form method="POST" action="update_system">
                 <input type="hidden" name="sp_num" value="{{ sp_num }}">
                 <label>Aantal actieve sensoren (Max 100):</label>
                 <div style="display: flex; gap: 10px;">
@@ -45,7 +45,7 @@ HTML_TEMPLATE = """
             </form>
             <hr>
             
-            <form method="GET" action="/">
+            <form method="GET" action="">
                 <input type="hidden" name="sp_id" value="{{ sp_id }}">
                 <label>Selecteer Sensor ID om te bewerken:</label>
                 <select name="sw_id" onchange="this.form.submit()">
@@ -55,7 +55,7 @@ HTML_TEMPLATE = """
                 </select>
             </form>
             
-            <form method="POST" action="/update_seawater">
+            <form method="POST" action="update_seawater">
                 <input type="hidden" name="sw_id" value="{{ sw_id }}">
                 <input type="hidden" name="sp_id" value="{{ sp_id }}">
                 <label>Positie {{ sw_id }} (Google Maps of Decimaal):</label>
@@ -66,7 +66,7 @@ HTML_TEMPLATE = """
 
         <div class="flex-col card">
             <h2>🎵 Spotify Configuratie</h2>
-            <form method="POST" action="/update_system">
+            <form method="POST" action="update_system">
                 <input type="hidden" name="sw_num" value="{{ sw_num }}">
                 <label>Aantal actieve sets (Max 24):</label>
                 <div style="display: flex; gap: 10px;">
@@ -76,7 +76,7 @@ HTML_TEMPLATE = """
             </form>
             <hr>
             
-            <form method="GET" action="/">
+            <form method="GET" action="">
                 <input type="hidden" name="sw_id" value="{{ sw_id }}">
                 <label>Selecteer Spotify Set ID om te bewerken:</label>
                 <select name="sp_id" onchange="this.form.submit()">
@@ -86,7 +86,7 @@ HTML_TEMPLATE = """
                 </select>
             </form>
             
-            <form method="POST" action="/update_spotify">
+            <form method="POST" action="update_spotify">
                 <input type="hidden" name="sw_id" value="{{ sw_id }}">
                 <input type="hidden" name="sp_id" value="{{ sp_id }}">
                 <label>Bron Afspeellijst (Source ID {{ sp_id }}):</label>
@@ -105,15 +105,12 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    # Lees de actieve ID's uit de URL (standaard 1)
     sw_id = request.args.get('sw_id', '1')
     sp_id = request.args.get('sp_id', '1')
 
-    # Lees de systeemaantallen uit de kluis
     sw_num = secrets_handler.get_secret("SeaWaterNumber") or "1"
     sp_num = secrets_handler.get_secret("PlaylistSets") or "1"
 
-    # Lees de waarden voor de momenteel geselecteerde ID's
     current_pos = secrets_handler.get_secret(f"Position{sw_id}") or ""
     current_src = secrets_handler.get_secret(f"SourceID{sp_id}") or ""
     current_tgt = secrets_handler.get_secret(f"TargetID{sp_id}") or ""
@@ -128,28 +125,20 @@ def index():
 
 @app.route('/update_system', methods=['POST'])
 def update_system():
-    # Sla de globale aantallen op
     secrets_handler.update_secret("SeaWaterNumber", request.form.get('sw_num'))
     secrets_handler.update_secret("PlaylistSets", request.form.get('sp_num'))
-    return redirect(url_for('index', msg="✅ Wols CA Systeemaantallen succesvol bijgewerkt!"))
+    
+    # WOLS CA FIX: Gebruik het veilige Ingress basis-pad voor de redirect
+    base_url = request.headers.get('X-Ingress-Path', '')
+    return redirect(f"{base_url}/?msg=✅ Wols CA Systeemaantallen succesvol bijgewerkt!")
 
 @app.route('/update_seawater', methods=['POST'])
 def update_seawater():
     sw_id = request.form.get('sw_id')
     sp_id = request.form.get('sp_id')
-    # Sla de specifieke positie op met het dynamische ID
     secrets_handler.update_secret(f"Position{sw_id}", request.form.get('Position'))
-    return redirect(url_for('index', sw_id=sw_id, sp_id=sp_id, msg=f"✅ Sea Water Positie {sw_id} opgeslagen!"))
+    
+    base_url = request.headers.get('X-Ingress-Path', '')
+    return redirect(f"{base_url}/?sw_id={sw_id}&sp_id={sp_id}&msg=✅ Sea Water Positie {sw_id} opgeslagen!")
 
-@app.route('/update_spotify', methods=['POST'])
-def update_spotify():
-    sw_id = request.form.get('sw_id')
-    sp_id = request.form.get('sp_id')
-    # Sla de specifieke Spotify velden op met het dynamische ID
-    secrets_handler.update_secret(f"SourceID{sp_id}", request.form.get('SourceID'))
-    secrets_handler.update_secret(f"TargetID{sp_id}", request.form.get('TargetID'))
-    secrets_handler.update_secret(f"PlayTime{sp_id}", request.form.get('PlayTime'))
-    return redirect(url_for('index', sw_id=sw_id, sp_id=sp_id, msg=f"✅ Spotify Set {sp_id} opgeslagen!"))
-
-def start_web_server():
-    app.run(host='0.0.0.0', port=8099, debug=False, use_reloader=False)
+@app.route('/update
