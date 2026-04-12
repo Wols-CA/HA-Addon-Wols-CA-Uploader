@@ -63,20 +63,24 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         options = userdata.get('options', {})
         m_id = options.get("WolsCA_MailboxID", "88889999")
 
-        # 1. Subscribe op de 'Troebele' kanalen én de Wols CA Handshake
+        # 1. Bepaal de hash voor de brievenbus
+        import hashlib
+        mb_hash = hashlib.sha256(str(m_id).encode()).hexdigest()[:16]
+
+        # 2. Subscribe op de 'Troebele' kanalen, de Wols CA Handshake én de HA UI commando's
         client.subscribe([
             ("wols_ca_mqtt/keys/public", 1),
-            ("wols_ca_mqtt/admin/service_verify", 1), # <-- DEZE ONTBRAK! (Voor Step C)
+            ("wols_ca_mqtt/admin/service_verify", 1), 
             ("wols_ca_mqtt/admin/password_ack", 1),
             (get_scrambled_path_helper(m_id, "key_rotation"), 1),
             (get_scrambled_path_helper(m_id, "requests"), 1),
-            (f"wols_ca_mqtt/mb/{mb_hash}/+/set/#", 1)
+            (f"wols_ca_mqtt/mb/{mb_hash}/+/set/#", 1)  # Luister naar de HA invoer!
         ])  
         
-        # 2. Vraag de eerste sleutel aan op de JUISTE root
+        # 3. Vraag de eerste sleutel aan op de JUISTE root
         client.publish("wols_ca_mqtt/admin/request_key", "STARTUP_SYNC", retain=False)
         
-        # 3. Bouw het dashboard
+        # 4. Bouw het dashboard
         publish_dashboard_discovery(client)
     else:
         logging.error(f"Connection failed with result code {reason_code}")
