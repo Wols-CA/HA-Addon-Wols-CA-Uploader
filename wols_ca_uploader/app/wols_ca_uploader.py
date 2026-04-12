@@ -87,6 +87,8 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     else:
         logging.error(f"Connection failed with result code {reason_code}")
 
+# ... (alle imports blijven gelijk) ...
+
 def main():
     global current_version
     try:
@@ -104,36 +106,31 @@ def main():
         password = options.get("mqtt_password") or get_secret("mqtt_password")
         
         set_mqtt_credentials(user, password)
-
-        # FORCEER INITIALISATIE VAN DE ROUTER
         import mqtt_triggers
         mqtt_triggers._router_instance = MQTTMessageRouter(current_version)
 
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata={'options': options})
-        
         if user and password:
             client.username_pw_set(user, password)
 
         client.on_connect = on_connect
         client.on_message = lambda c, u, m: handle_mqtt_message(c, m, current_version)
-        client.reconnect_delay_set(min_delay=1, max_delay=60)
         
+        # WOLS CA FIX: Koppel de client aan de Web UI voor directe pushes
+        wols_ca_web_ui.set_interface_params(client)
+
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
         logging.info(f"Connecting to {broker} via Mailbox {mailbox_id}...")
         client.connect(broker, port, 60)
-
         start_heartbeat(client, mailbox_id) 
         
-        # Start de Wols CA Web UI in een aparte thread op de achtergrond
         ui_thread = threading.Thread(target=wols_ca_web_ui.start_web_server, daemon=True)
         ui_thread.start()
         logging.info("the Wols CA Ingress Web UI started on port 8099.")
-        
         client.loop_forever()
         
     except Exception as e:
-        logging.error(f"FATAL ERROR during startup: {e}")
-        logging.error(traceback.format_exc())
+        logging.error(f"FATAL ERROR: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

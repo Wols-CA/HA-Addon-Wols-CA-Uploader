@@ -1,10 +1,16 @@
 from flask import Flask, request, render_template_string, redirect
 import logging
 import secrets_handler
+import mqtt_triggers # Importeer de Wols CA filters
 
 app = Flask(__name__)
+# Global references om te kunnen communiceren met de actieve MQTT sessie
+active_client = None
 
-# Wols CA Dynamisch Design (Met Ingress-veilige relatieve URL's)
+def set_interface_params(client):
+    global active_client
+    active_client = client
+
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="nl">
@@ -27,10 +33,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <h1>Wols CA System Controller</h1>
-    
-    {% if message %}
-        <div class="success">{{ message }}</div>
-    {% endif %}
+    {% if message %}<div class="success">{{ message }}</div>{% endif %}
 
     <div class="flex-row">
         <div class="flex-col card">
@@ -44,7 +47,6 @@ HTML_TEMPLATE = """
                 </div>
             </form>
             <hr>
-            
             <form method="GET" action="">
                 <input type="hidden" name="sp_id" value="{{ sp_id }}">
                 <label>Selecteer Sensor ID om te bewerken:</label>
@@ -54,13 +56,12 @@ HTML_TEMPLATE = """
                     {% endfor %}
                 </select>
             </form>
-            
             <form method="POST" action="update_seawater">
                 <input type="hidden" name="sw_id" value="{{ sw_id }}">
                 <input type="hidden" name="sp_id" value="{{ sp_id }}">
                 <label>Positie {{ sw_id }} (Google Maps of Decimaal):</label>
                 <input type="text" name="Position" value="{{ current_pos }}" placeholder="Bijv: 43°04'58.1&quot;N 6°03'56.2&quot;E">
-                <input type="submit" value="Data Opslaan (ID {{ sw_id }})">
+                <input type="submit" value="Opslaan & Direct Pushen (ID {{ sw_id }})">
             </form>
         </div>
 
@@ -75,7 +76,6 @@ HTML_TEMPLATE = """
                 </div>
             </form>
             <hr>
-            
             <form method="GET" action="">
                 <input type="hidden" name="sw_id" value="{{ sw_id }}">
                 <label>Selecteer Spotify Set ID om te bewerken:</label>
@@ -85,17 +85,13 @@ HTML_TEMPLATE = """
                     {% endfor %}
                 </select>
             </form>
-            
             <form method="POST" action="update_spotify">
                 <input type="hidden" name="sw_id" value="{{ sw_id }}">
                 <input type="hidden" name="sp_id" value="{{ sp_id }}">
-                <label>Bron Afspeellijst (Source ID {{ sp_id }}):</label>
-                <input type="text" name="SourceID" value="{{ current_src }}">
-                <label>Doel Afspeellijst (Target ID {{ sp_id }}):</label>
-                <input type="text" name="TargetID" value="{{ current_tgt }}">
-                <label>Afspeeltijd (PlayTime {{ sp_id }}):</label>
-                <input type="text" name="PlayTime" value="{{ current_pt }}">
-                <input type="submit" value="Data Opslaan (ID {{ sp_id }})">
+                <label>Bron ID {{ sp_id }}:</label><input type="text" name="SourceID" value="{{ current_src }}">
+                <label>Doel ID {{ sp_id }}:</label><input type="text" name="TargetID" value="{{ current_tgt }}">
+                <label>Tijd ID {{ sp_id }}:</label><input type="text" name="PlayTime" value="{{ current_pt }}">
+                <input type="submit" value="Opslaan & Direct Pushen (ID {{ sp_id }})">
             </form>
         </div>
     </div>
@@ -107,50 +103,50 @@ HTML_TEMPLATE = """
 def index():
     sw_id = request.args.get('sw_id', '1')
     sp_id = request.args.get('sp_id', '1')
-
     sw_num = secrets_handler.get_secret("SeaWaterNumber") or "1"
     sp_num = secrets_handler.get_secret("PlaylistSets") or "1"
-
     current_pos = secrets_handler.get_secret(f"Position{sw_id}") or ""
     current_src = secrets_handler.get_secret(f"SourceID{sp_id}") or ""
     current_tgt = secrets_handler.get_secret(f"TargetID{sp_id}") or ""
     current_pt  = secrets_handler.get_secret(f"PlayTime{sp_id}") or ""
-    
-    return render_template_string(HTML_TEMPLATE, 
-                                  sw_num=sw_num, sp_num=sp_num,
-                                  sw_id=sw_id, sp_id=sp_id,
-                                  current_pos=current_pos,
-                                  current_src=current_src, current_tgt=current_tgt, current_pt=current_pt,
-                                  message=request.args.get('msg'))
+    return render_template_string(HTML_TEMPLATE, sw_num=sw_num, sp_num=sp_num, sw_id=sw_id, sp_id=sp_id, current_pos=current_pos, current_src=current_src, current_tgt=current_tgt, current_pt=current_pt, message=request.args.get('msg'))
 
 @app.route('/update_system', methods=['POST'])
 def update_system():
     secrets_handler.update_secret("SeaWaterNumber", request.form.get('sw_num'))
     secrets_handler.update_secret("PlaylistSets", request.form.get('sp_num'))
-    
-    # WOLS CA FIX: Gebruik het veilige Ingress basis-pad voor de redirect
+    # Forceer een push naar C++
+    if mqtt_triggers._router_instance and active_client:
+        mqtt_triggers._router_instance._send_seawater_details(active_client)
+        mqtt_triggers._router_instance._send_spotify_details(active_client)
     base_url = request.headers.get('X-Ingress-Path', '')
-    return redirect(f"{base_url}/?msg=✅ Wols CA Systeemaantallen succesvol bijgewerkt!")
+    return redirect(f"{base_url}/?msg=✅ Systeemaantallen bijgewerkt en gepusht!")
 
 @app.route('/update_seawater', methods=['POST'])
 def update_seawater():
     sw_id = request.form.get('sw_id')
-    sp_id = request.form.get('sp_id')
-    secrets_handler.update_secret(f"Position{sw_id}", request.form.get('Position'))
-    
+    raw_pos = request.form.get('Position')
+    # WOLS CA FIX: Poets de invoer direct op naar digitaal VOORDAT we opslaan
+    clean_pos = mqtt_triggers.parse_google_maps_coordinates(raw_pos)
+    final_pos = clean_pos if clean_pos else raw_pos
+    secrets_handler.update_secret(f"Position{sw_id}", final_pos)
+    # Forceer een push naar C++
+    if mqtt_triggers._router_instance and active_client:
+        mqtt_triggers._router_instance._send_seawater_details(active_client)
     base_url = request.headers.get('X-Ingress-Path', '')
-    return redirect(f"{base_url}/?sw_id={sw_id}&sp_id={sp_id}&msg=✅ Sea Water Positie {sw_id} opgeslagen!")
+    return redirect(f"{base_url}/?sw_id={sw_id}&msg=✅ Positie {sw_id} gedigitaliseerd en gepusht!")
 
 @app.route('/update_spotify', methods=['POST'])
 def update_spotify():
-    sw_id = request.form.get('sw_id')
     sp_id = request.form.get('sp_id')
     secrets_handler.update_secret(f"SourceID{sp_id}", request.form.get('SourceID'))
     secrets_handler.update_secret(f"TargetID{sp_id}", request.form.get('TargetID'))
     secrets_handler.update_secret(f"PlayTime{sp_id}", request.form.get('PlayTime'))
-    
+    # Forceer een push naar C++
+    if mqtt_triggers._router_instance and active_client:
+        mqtt_triggers._router_instance._send_spotify_details(active_client)
     base_url = request.headers.get('X-Ingress-Path', '')
-    return redirect(f"{base_url}/?sw_id={sw_id}&sp_id={sp_id}&msg=✅ Spotify Set {sp_id} opgeslagen!")
+    return redirect(f"{base_url}/?sp_id={sp_id}&msg=✅ Spotify Set {sp_id} gepusht!")
 
 def start_web_server():
     app.run(host='0.0.0.0', port=8099, debug=False, use_reloader=False)
