@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import hashlib
+import re
 
 import secrets_handler
 import public_key_handler
@@ -22,8 +23,45 @@ def get_scrambled_path_helper(mailbox_id, sub_topic):
     sub_hash = hashlib.sha256(sub_topic.encode()).hexdigest()[:16]
     return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
 
+def parse_google_maps_coordinates(coord_str):
+    """
+    Slimme Wols CA filter: Zet Google Maps formaten om naar decimale C++ standaard.
+    Ondersteunt:
+    - Decimaal: "43.0828, 6.0656"
+    - Graden/Min/Sec: "43°04'58.1\"N 6°03'56.2\"E"
+    """
+    if not coord_str:
+        return None
+    coord_str = coord_str.strip()
+    
+    # 1. Check voor standaard decimale invoer (bijv. "43.0828, 6.0656")
+    decimal_match = re.match(r"^\s*(-?\d+\.\d+)[,\s]+(-?\d+\.\d+)\s*$", coord_str)
+    if decimal_match:
+        return f"{decimal_match.group(1)}, {decimal_match.group(2)}"
+        
+    # 2. Check voor Google Maps DMS invoer (bijv. 43°04'58.1"N 6°03'56.2"E)
+    dms_pattern = r"(\d+)[°\s]+(\d+)['\s]+([\d\.]+)(?:\"|''|\s)*([NS])[,\s]*(\d+)[°\s]+(\d+)['\s]+([\d\.]+)(?:\"|''|\s)*([EW])"
+    dms_match = re.search(dms_pattern, coord_str, re.IGNORECASE)
+    
+    if dms_match:
+        lat_d, lat_m, lat_s, lat_dir, lon_d, lon_m, lon_s, lon_dir = dms_match.groups()
+        
+        # Converteer Latitude
+        lat = float(lat_d) + float(lat_m)/60 + float(lat_s)/3600
+        if lat_dir.upper() == 'S':
+            lat = -lat
+            
+        # Converteer Longitude
+        lon = float(lon_d) + float(lon_m)/60 + float(lon_s)/3600
+        if lon_dir.upper() == 'W':
+            lon = -lon
+            
+        return f"{round(lat, 6)}, {round(lon, 6)}"
+        
+    return None # Onbekend formaat, blokkeer verzending naar C++
+
 def publish_dashboard_discovery(client):
-    """Genereert 172 discovery velden voor HA."""
+    """Genereert discovery velden voor HA."""
     options = {}
     if _router_instance:
         options = _router_instance._get_options()
@@ -89,7 +127,6 @@ class MQTTMessageRouter:
 
         # --- WOLS CA HANDSHAKE ROUTING ---
         if topic == "wols_ca_mqtt/keys/public":
-            # Step A: C++ stuurde zijn public key
             options = self._get_options()
             url = options.get("mqtt_broker", "localhost")
             import public_key_handler
@@ -97,20 +134,66 @@ class MQTTMessageRouter:
             return True
             
         if topic == "wols_ca_mqtt/admin/service_verify":
-            # Step C: C++ bewijst zijn identiteit en stuurt Key B
             import public_key_handler
             public_key_handler.StepC_Verify_Service_And_Respond(client, msg)
             return True
             
         if topic == "wols_ca_mqtt/admin/password_ack":
-            # Final ACK of NACK van de C++ Service
             import public_key_handler
             public_key_handler.handle_ack(payload_str)
             return True
 
-        # --- SECURE MAILBOX & JITTER ROUTING ---
-        import hashlib
-        import json
+        # --- UPLOAD SEAWATER TO HA ---
+        sw_data_hash = hashlib.sha256("seawater_sensor_data".encode()).hexdigest()[:16]
+        if sw_data_hash in topic:
+            try:
+                envelope = json.loads(payload_str)
+                data_str = envelope.get("data", "")
+                sig = envelope.get("signature", "")
+                
+                # Robuuste Wols CA verificatie
+                raw_hash = hashlib.sha256((data_str + active_mqtt_password).encode('utf-8'))
+                expected_hex = raw_hash.hexdigest().lower()
+                import base64
+                expected_b64 = base64.b64encode(raw_hash.digest()).decode('utf-8')
+                
+                if sig.lower() == expected_hex or sig == expected_b64:
+                    data = json.loads(data_str)
+                    node_id = data.get("id")
+                    temp = data.get("temperature")
+                    
+                    maps_url = data.get("google_maps")
+                    todo_url = data.get("things_to_do")
+                    
+                    # Generates interactive buttons for HA Markdown Cards!
+                    markdown_buttons = (
+                        f"[![Google Maps](https://img.shields.io/badge/Google%20Maps-Open-4285F4?style=for-the-badge&logo=googlemaps&logoColor=white)]({maps_url})  "
+                        f"[![Things to Do](https://img.shields.io/badge/Things%20to%20Do-Explore-FF69B4?style=for-the-badge&logo=tripadvisor&logoColor=white)]({todo_url})"
+                    )
+
+                    attributes = {
+                        "Location Name": data.get("name"),
+                        "Latitude": data.get("latitude"),
+                        "Longitude": data.get("longitude"),
+                        "Google Maps": maps_url,
+                        "Things to Do": todo_url,
+                        "Dashboard Buttons": markdown_buttons,
+                        "Last Updated": time.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    
+                    ha_base_topic = f"wols_ca_mqtt/ha/seawater/temp/{node_id}"
+                    
+                    client.publish(ha_base_topic, str(temp), retain=True)
+                    client.publish(f"{ha_base_topic}/attributes", json.dumps(attributes), retain=True)
+                    
+                    self.logger.info(f"📍 SeaWater data securely forwarded to HA for: {data.get('name')} ({temp}°C)")
+                else:
+                    self.logger.error("Fake SeaWater data rejected! Signature mismatch.")
+            except Exception as e:
+                self.logger.error(f"Error parsing SeaWater data: {e}")
+            return True
+
+        # --- JITTER ROUTING ---
         key_rotation_hash = hashlib.sha256("key_rotation".encode()).hexdigest()[:16]
         if key_rotation_hash in topic:
             try:
@@ -179,19 +262,23 @@ class MQTTMessageRouter:
         self._send_config_response(client, "HAServiceSettings", data)
 
     def _send_seawater_details(self, client):
-        """Haalt SeaWater posities op en stuurt ze versleuteld naar de Service."""
         options = self._get_options()
         if not options.get("SeaWaterEnabled", False):
             self._send_config_response(client, "SeaWaterDetails", {"Enabled": False})
             return
 
-        # Haal de waarden op uit secrets.yaml zodat ze toegankelijk zijn voor HA [cite: 2026-04-09]
         num_sensors = int(options.get("SeaWaterNumber", 0))
         posities = []
         for i in range(1, num_sensors + 1):
-            val = secrets_handler.get_secret(f"Position{i}")
-            if val is not None:
-                posities.append({"id": i, "value": val})
+            raw_val = secrets_handler.get_secret(f"Position{i}")
+            
+            # WOLS CA FIX: Gebruik de slimme filter om coördinaten schoon te poetsen
+            parsed_val = parse_google_maps_coordinates(raw_val)
+            
+            if parsed_val is not None:
+                posities.append({"id": i, "value": parsed_val})
+            elif raw_val:
+                self.logger.error(f"❌ Ongeldig coördinaat formaat bij Position{i}: '{raw_val}'. Wordt overgeslagen ter bescherming van de C++ Service.")
 
         payload = {
             "Enabled": True,
@@ -202,7 +289,6 @@ class MQTTMessageRouter:
         self._send_config_response(client, "SeaWaterDetails", payload)
 
     def _send_spotify_details(self, client):
-        """Stuurt Spotify configuratie versleuteld door."""
         options = self._get_options()
         if not options.get("SpotifyEnabled", False):
             self._send_config_response(client, "SpotifyDetails", {"Enabled": False})
