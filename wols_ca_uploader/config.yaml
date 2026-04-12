@@ -1,5 +1,5 @@
 name: "Wols CA MQTT Automation Uploader"
-version: "0.2.4"
+version: "0.2.5"
 slug: "wols_ca_uploader"
 description: "Secure Vault and Uploader for Wols CA C++ services"
 arch:
@@ -7,6 +7,13 @@ arch:
   - amd64
 startup: application
 boot: auto
+# --- WOLS CA INGRESS SETTINGS ---
+webui: "http://[HOST]:[PORT:8099]/"
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:security
+panel_title: "a Wols CA System"
+# --------------------------------
 options:
   mqtt_broker: ""
   mqtt_port: 1883

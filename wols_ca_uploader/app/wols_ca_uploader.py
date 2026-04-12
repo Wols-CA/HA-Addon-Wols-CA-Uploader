@@ -1,3 +1,5 @@
+import threading
+import web_ui
 import sys
 import logging
 import threading
@@ -121,6 +123,11 @@ def main():
         client.connect(broker, port, 60)
 
         start_heartbeat(client, mailbox_id) 
+        
+        # Start de Wols CA Web UI in een aparte thread op de achtergrond
+        ui_thread = threading.Thread(target=web_ui.start_web_server, daemon=True)
+        ui_thread.start()
+        logging.info("the Wols CA Ingress Web UI started on port 8099.")
         
         client.loop_forever()
         
