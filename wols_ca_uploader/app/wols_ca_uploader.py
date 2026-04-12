@@ -1,18 +1,18 @@
-import threading
-import flask
-import logging
-import threading
-import time
-import os
-import json
-import traceback
-import hashlib
+import sys
 
 # 1. ENFORCE VERSION AT THE TOP
 if sys.version_info < (3, 12):
     print("FATAL: This addon requires Python 3.12 or higher.")
     print(f"Current version: {sys.version}")
     sys.exit(1)
+
+import threading
+import time
+import os
+import json
+import traceback
+import hashlib
+import logging
 
 import yaml
 import paho.mqtt.client as mqtt

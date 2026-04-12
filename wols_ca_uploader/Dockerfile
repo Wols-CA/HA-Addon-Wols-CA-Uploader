@@ -17,6 +17,7 @@ COPY app/wols_ca_uploader.py .
 COPY app/mqtt_triggers.py .
 COPY app/public_key_handler.py .
 COPY app/secrets_handler.py .
+copy app/wols_ca_web_ui.py .
 
 # Setup internal config path
 RUN mkdir -p /app/internal
