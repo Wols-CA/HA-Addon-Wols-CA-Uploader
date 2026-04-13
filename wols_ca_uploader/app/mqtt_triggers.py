@@ -19,12 +19,12 @@ def set_mqtt_credentials(user, password):
 
 def get_scrambled_path_helper(mailbox_id, sub_topic):
     """Berekent het troebele pad conform de Wols CA standaard."""
-    mb_hash = hashlib.sha256(mailbox_id.encode()).hexdigest()[:16]
-    sub_hash = hashlib.sha256(sub_topic.encode()).hexdigest()[:16]
+    # WOLS CA FIX: str() forceert type safety voor hashing
+    mb_hash = hashlib.sha256(str(mailbox_id).encode()).hexdigest()[:16]
+    sub_hash = hashlib.sha256(str(sub_topic).encode()).hexdigest()[:16]
     return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
 
 def parse_google_maps_coordinates(coord_str):
-    """Slimme Wols CA filter: Zet Google Maps formaten om naar decimale C++ standaard."""
     if not coord_str:
         return None
     coord_str = coord_str.strip()
@@ -44,10 +44,9 @@ def parse_google_maps_coordinates(coord_str):
         if lon_dir.upper() == 'W': lon = -lon
         return f"{round(lat, 6)}, {round(lon, 6)}"
         
-    return None 
+    return None
 
 def publish_dashboard_discovery(client):
-    """Genereert discovery velden voor HA."""
     options = {}
     if _router_instance:
         options = _router_instance._get_options()
@@ -129,6 +128,12 @@ class MQTTMessageRouter:
         if topic == "wols_ca_mqtt/admin/password_ack":
             import public_key_handler
             public_key_handler.handle_ack(payload_str)
+            # WOLS CA FIX: Actief direct de configuratie pushen na succes
+            if payload_str == "ACK":
+                self.logger.info("🚀 C++ Service is Ready! Actively pushing Wols CA Configuration...")
+                self._send_ha_service_settings(client)
+                self._send_spotify_details(client)
+                self._send_seawater_details(client)
             return True
         
         if topic == request_path:
@@ -220,20 +225,6 @@ class MQTTMessageRouter:
 
         return False
 
-    def _handle_handshake(self, client, topic, payload, msg):
-        if "keys/public" in topic:
-            import public_key_handler
-            public_key_handler.handle_raw_bytes(client, msg, active_mqtt_user, active_mqtt_password)
-        elif "password_ack" in topic:
-            if payload == "ACK":
-                self.logger.info("🚀 SECURE HANDSHAKE SUCCESS")
-                import public_key_handler
-                if hasattr(public_key_handler, 'promote_temp_key'):
-                    public_key_handler.promote_temp_key()
-                self._send_ha_service_settings(client)
-                self._send_spotify_details(client)
-                self._send_seawater_details(client)
-
     def _send_config_response(self, client, key, data):
         options = self._get_options()
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
@@ -277,17 +268,16 @@ class MQTTMessageRouter:
             "Sensors": posities,
             "Timestamp": int(time.time())
         }
-        
         self._send_config_response(client, "SeaWaterDetails", payload)
 
     def _send_spotify_details(self, client):
-        num_sets = secrets_handler.get_secret("PlaylistSets")
-        if num_sets is None:
-            num_sets = 0
+        options = self._get_options()
+        if not options.get("SpotifyEnabled", False):
+            self._send_config_response(client, "SpotifyDetails", {"Enabled": False})
+            return
 
-        num_sets = int(num_sets)
         sets = []
-        
+        num_sets = int(options.get("PlaylistSets", 0))
         for i in range(1, num_sets + 1):
             src = secrets_handler.get_secret(f"SourceID{i}")
             tgt = secrets_handler.get_secret(f"TargetID{i}")
@@ -300,7 +290,6 @@ class MQTTMessageRouter:
             "Sets": sets,
             "Timestamp": int(time.time())
         }
-        
         self._send_config_response(client, "SpotifyDetails", payload)
 
 def handle_mqtt_message(client, msg, uploader_version):
