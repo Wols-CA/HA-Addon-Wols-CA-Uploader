@@ -7,16 +7,13 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 # --- WOLS CA VERSIE CONTROLE ---
-UPLOADER_MIN_ACCEPTED_SERVICE = "1.0.0"
+UPLOADER_MIN_ACCEPTED_SERVICE = "0.5.0"
 UPLOADER_MAX_ACCEPTED_SERVICE = "2.9.9"
 
 def is_version_allowed(version, min_v, max_v):
-    """Vergelijkt semantische versies"""
     def parse_v(v): return tuple(map(int, str(v).split('.')))
-    try:
-        return parse_v(min_v) <= parse_v(version) <= parse_v(max_v)
-    except Exception:
-        return False
+    try: return parse_v(min_v) <= parse_v(version) <= parse_v(max_v)
+    except Exception: return False
 
 # Service Keys
 active_public_key = None  
@@ -37,14 +34,39 @@ def init_uploader_keys():
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         ).decode('utf-8')
 
+# --- WOLS CA FIX: RSA Block Chunking (Max 190 bytes plaintext per encryptie) ---
+def encrypt_data_chunked(public_key, plaintext):
+    plaintext_bytes = plaintext.encode('utf-8')
+    chunk_size = 190
+    encrypted_bytes = bytearray()
+    for i in range(0, len(plaintext_bytes), chunk_size):
+        chunk = plaintext_bytes[i:i+chunk_size]
+        encrypted_chunk = public_key.encrypt(
+            chunk,
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+        )
+        encrypted_bytes.extend(encrypted_chunk)
+    return bytes(encrypted_bytes)
+
+def decrypt_data_chunked(private_key, encrypted_bytes):
+    chunk_size = 256
+    decrypted_bytes = bytearray()
+    for i in range(0, len(encrypted_bytes), chunk_size):
+        chunk = encrypted_bytes[i:i+chunk_size]
+        if len(chunk) != chunk_size: break
+        decrypted_chunk = private_key.decrypt(
+            chunk,
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+        )
+        decrypted_bytes.extend(decrypted_chunk)
+    return decrypted_bytes.decode('utf-8')
+# ---------------------------------------------------------------------------------
+
 def StepA_Process_PublicKey(client, msg, mqtt_user, mqtt_password, mqtt_url, current_uploader_version):
     global temp_public_key, stored_credentials
     try:
         payload_data = json.loads(msg.payload.decode('utf-8'))
         raw_pub_key = payload_data.get("pub_key", "")
-        
-        # WOLS CA FIX: JSON/MQTT escape correctie
-        # Converteer letterlijke "\n" tekst terug naar echte wiskundige enters voor OpenSSL
         if isinstance(raw_pub_key, str):
             raw_pub_key = raw_pub_key.replace('\\n', '\n').replace('\\r', '')
 
@@ -53,16 +75,14 @@ def StepA_Process_PublicKey(client, msg, mqtt_user, mqtt_password, mqtt_url, cur
         req_max_uploader = payload_data.get("max_uploader", "99.99.99")
 
         if not is_version_allowed(service_version, UPLOADER_MIN_ACCEPTED_SERVICE, UPLOADER_MAX_ACCEPTED_SERVICE):
-            logging.error(f"❌ [Versie Controle] Service versie {service_version} is buiten de Uploader limieten. Handshake afgewezen.")
+            logging.error(f"❌ [Versie Controle] Service versie {service_version} is afgewezen.")
             client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
             return
 
         if not is_version_allowed(current_uploader_version, req_min_uploader, req_max_uploader):
-            logging.error(f"❌ [Versie Controle] Uploader v{current_uploader_version} is buiten de C++ eisen. Handshake afgewezen.")
+            logging.error(f"❌ [Versie Controle] Uploader v{current_uploader_version} is buiten de C++ eisen. Afgewezen.")
             client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
             return
-
-        logging.info(f"✅ [Versie Controle] Succes! Service v{service_version} gekoppeld aan Uploader v{current_uploader_version}.")
 
         new_key = serialization.load_pem_public_key(raw_pub_key.encode('utf-8'))
         if isinstance(new_key, rsa.RSAPublicKey):
@@ -76,23 +96,16 @@ def StepA_Process_PublicKey(client, msg, mqtt_user, mqtt_password, mqtt_url, cur
             ephemeral_session = f"wols_ca_mqtt/session/{secrets.token_hex(12)}"
             
             stored_credentials = {
-                "url": mqtt_url, 
-                "user": mqtt_user, 
-                "pass": safe_pass, 
-                "mailbox": product_key,
-                "session_topic": ephemeral_session,
-                "uploader_pub_key": uploader_public_key_pem,
-                "uploader_version": current_uploader_version
+                "url": mqtt_url, "user": mqtt_user, "pass": safe_pass, 
+                "mailbox": product_key, "session_topic": ephemeral_session,
+                "uploader_pub_key": uploader_public_key_pem, "uploader_version": current_uploader_version
             }
             
             logging.info(f"🚀 [Step A] Genereren Ephemeral Channel: {ephemeral_session}")
             payload = json.dumps(stored_credentials)
             send_encrypted_payload(client, "wols_ca_mqtt/admin/encrypted_credentials", payload, use_temp=True)
             
-    except json.JSONDecodeError:
-        logging.error("[Step A] FATAL: Ontving raw string in plaats van JSON. Update C++ node naar nieuwe standaard!")
-    except Exception as e:
-        logging.error(f"[Step A] Fout bij verwerken Service Public Key: {e}")
+    except Exception as e: logging.error(f"[Step A] Fout bij verwerken Service Public Key: {e}")
 
 def StepC_Verify_Service_And_Respond(client, msg):
     global temp_public_key, active_public_key, stored_credentials
@@ -108,24 +121,20 @@ def StepC_Verify_Service_And_Respond(client, msg):
         expected_b64 = base64.b64encode(raw_hash.digest()).decode('utf-8')
         
         if incoming_signature.lower() != expected_hex and incoming_signature != expected_b64:
-            logging.error("[Step C] FATAL: Signature mismatch! Service identity compromised.")
             client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
             return
 
         data = json.loads(data_str)
-        if (data.get("url") == stored_credentials["url"] and 
-            data.get("user") == stored_credentials["user"]):
+        if (data.get("url") == stored_credentials["url"] and data.get("user") == stored_credentials["user"]):
             
             server_name = data.get("server_name", "Unknown_Service")
             session_topic = stored_credentials.get("session_topic")
             
             import mqtt_triggers
             mqtt_triggers.register_new_session(client, server_name, session_topic)
-            
             logging.info(f"🚀 [Step C] Service '{server_name}' geverifieerd! Mutual RSA geactiveerd.")
             
             new_key_pem = data.get("new_pub_key")
-            # WOLS CA FIX: Ook hier de JSON escape correctie toepassen voor de zekerheid
             if isinstance(new_key_pem, str):
                 new_key_pem = new_key_pem.replace('\\n', '\n').replace('\\r', '')
 
@@ -135,19 +144,14 @@ def StepC_Verify_Service_And_Respond(client, msg):
             verify_payload = json.dumps({"verify": "WolsCA_Uploader_Verified"})
             send_encrypted_payload(client, "wols_ca_mqtt/admin/uploader_verify", verify_payload)
         else:
-            logging.error("[Step C] Credentials mismatch from service.")
             client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
             
-    except Exception as e:
-        logging.error(f"[Step C] Error verifying service: {e}")
+    except Exception as e: logging.error(f"[Step C] Error verifying service: {e}")
 
 def send_encrypted_payload(client, topic, plaintext, use_temp=False):
     key_to_use = temp_public_key if use_temp else active_public_key
     if not key_to_use: return
-    encrypted = key_to_use.encrypt(
-        plaintext.encode('utf-8'),
-        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
-    )
+    encrypted = encrypt_data_chunked(key_to_use, plaintext)
     b64_string = base64.b64encode(encrypted).decode('utf-8')
     client.publish(topic, b64_string, qos=1, retain=False)
 
@@ -156,29 +160,27 @@ def decrypt_from_service(b64_encrypted_payload):
     if not uploader_private_key: return None
     try:
         encrypted_bytes = base64.b64decode(b64_encrypted_payload)
-        decrypted = uploader_private_key.decrypt(
-            encrypted_bytes,
-            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
-        )
-        return decrypted.decode('utf-8')
+        return decrypt_data_chunked(uploader_private_key, encrypted_bytes)
     except Exception as e:
         logging.error(f"Fout bij Mutual RSA decryptie: {e}")
         return None
 
+def bulk_encrypt_for_service(plaintext):
+    """Helper voor mqtt_triggers om grote data te versleutelen."""
+    if not active_public_key: raise ValueError("No active key")
+    encrypted = encrypt_data_chunked(active_public_key, plaintext)
+    return base64.b64encode(encrypted).decode('utf-8')
+
 def handle_ack(payload):
-    if payload == "ACK":
-        logging.info("🚀 [Wols CA Handshake Complete] Mutual Authentication & Burner Channel Actief.")
-    elif payload == "NACK":
-        logging.error("❌ [Handshake Failed] Service rejected the verification.")
+    if payload == "ACK": logging.info("🚀 [Wols CA Handshake Complete] Mutual Authentication & Burner Channel Actief.")
+    elif payload == "NACK": logging.error("❌ [Handshake Failed] Service rejected the verification.")
 
 def update_rolling_key(new_pem_string):
     global active_public_key
     try:
-        if isinstance(new_pem_string, str):
-            new_pem_string = new_pem_string.replace('\\n', '\n').replace('\\r', '')
+        if isinstance(new_pem_string, str): new_pem_string = new_pem_string.replace('\\n', '\n').replace('\\r', '')
         new_key = serialization.load_pem_public_key(new_pem_string.encode())
         if isinstance(new_key, rsa.RSAPublicKey):
             active_public_key = new_key
             logging.info("🚀 [Rolling Key] Security upgraded with new RSA generation.")
-    except Exception as e:
-        logging.error(f"Rolling Key update failed: {e}")
+    except Exception as e: logging.error(f"Rolling Key update failed: {e}")
