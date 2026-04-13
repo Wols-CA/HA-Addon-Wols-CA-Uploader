@@ -20,11 +20,15 @@ def StepA_Process_PublicKey(client, msg, mqtt_user, mqtt_password, mqtt_url):
         if isinstance(new_key, rsa.RSAPublicKey):
             temp_public_key = new_key
             
-            # Wols CA veilige fallback als password None is
             safe_pass = mqtt_password if mqtt_password else ""
-            stored_credentials = {"url": mqtt_url, "user": mqtt_user, "pass": safe_pass}
             
-            logging.info("🚀 [Step A] RSA Public Key received. Sending encrypted credentials (Step B)...")
+            # WOLS CA FIX: Haal de Product Key op en verstop hem in de versleutelde Handshake!
+            from secrets_handler import get_secret
+            product_key = get_secret("wols_ca_product_key")
+            
+            stored_credentials = {"url": mqtt_url, "user": mqtt_user, "pass": safe_pass, "mailbox": product_key}
+            
+            logging.info("🚀 [Step A] RSA Public Key received. Sending encrypted credentials & Product Key (Step B)...")
             
             payload = json.dumps(stored_credentials)
             send_encrypted_payload(client, "wols_ca_mqtt/admin/encrypted_credentials", payload, use_temp=True)
