@@ -23,7 +23,8 @@ def set_mqtt_credentials(user, password):
 def get_scrambled_path_helper(mailbox_id, sub_topic):
     mb_hash = hashlib.sha256(str(mailbox_id).encode()).hexdigest()[:16]
     sub_hash = hashlib.sha256(str(sub_topic).encode()).hexdigest()[:16]
-    return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
+    # WOLS CA FIX: Forceer de gehele cryptografische route veilig naar lowercase
+    return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}".lower()
 
 def parse_google_maps_coordinates(coord_str):
     if not coord_str:
@@ -67,7 +68,7 @@ def publish_dashboard_discovery(client):
             "state_topic": f"{sw_mailbox}/state/Position{i}",
             "device": dev_seawater
         }
-        client.publish(f"homeassistant/text/wols_ca/sw_pos_{i}/config", json.dumps(sw_payload), retain=True)
+        client.publish(f"homeassistant/text/wols_ca/sw_pos_{i}/config".lower(), json.dumps(sw_payload), retain=True)
 
     spot_mailbox = get_scrambled_path_helper(mailbox_id, "SpotifyDetails")
     for i in range(1, 25):
@@ -80,7 +81,7 @@ def publish_dashboard_discovery(client):
                 "state_topic": f"{spot_mailbox}/state/{field}{i}",
                 "device": dev_spotify
             }
-            client.publish(f"homeassistant/text/wols_ca/spot_{field.lower()}_{i}/config", json.dumps(spot_payload), retain=True)
+            client.publish(f"homeassistant/text/wols_ca/spot_{field.lower()}_{i}/config".lower(), json.dumps(spot_payload), retain=True)
 
     logging.info("🚀 Dashboard Discovery: 172 secure entities registered.")
 
@@ -172,7 +173,7 @@ class MQTTMessageRouter:
                         "Last Updated": time.strftime('%Y-%m-%d %H:%M:%S')
                     }
                     
-                    ha_base_topic = f"wols_ca_mqtt/ha/seawater/temp/{node_id}"
+                    ha_base_topic = f"wols_ca_mqtt/ha/seawater/temp/{node_id}".lower()
                     client.publish(ha_base_topic, str(temp), retain=True)
                     client.publish(f"{ha_base_topic}/attributes", json.dumps(attributes), retain=True)
                     
@@ -208,6 +209,7 @@ class MQTTMessageRouter:
 
             if secrets_handler.update_secret(field_name, value_to_store):
                 self.logger.info(f"📍 Securely stored {field_name}")
+                # We vervangen /set/ door /state/ maar behouden de casing voor field_name
                 state_topic = topic.replace("/set/", "/state/")
                 client.publish(state_topic, value_to_store, retain=True)
 
