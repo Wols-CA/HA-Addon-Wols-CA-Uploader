@@ -222,22 +222,48 @@ class MQTTMessageRouter:
 
         return False
 
-    def _send_config_response(self, client, key, data):
+def _send_config_response(self, client, key, data):
         options = self._get_options()
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
         
-        # WOLS CA FIX: 
-        # 1. encrypted = False zodat C++ hem als leesbare JSON accepteert
-        # 2. we verpakken de specifieke data (SeaWaterDetails) veilig ín het "payload" object.
+        import public_key_handler
+        import base64
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+        
+        is_encrypted = public_key_handler.active_public_key is not None
+        
+        # De exacte modulaire Wols CA structuur als string
+        inner_payload_str = json.dumps({ key: data })
+        final_payload = { key: data } # Standaard ongecodeerd object
+        
+        if is_encrypted:
+            try:
+                # WOLS CA: Daadwerkelijke 2e encryptielaag (Application Layer) via RSA
+                encrypted_bytes = public_key_handler.active_public_key.encrypt(
+                    inner_payload_str.encode('utf-8'),
+                    padding.OAEP(
+                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None
+                    )
+                )
+                # Converteer de binaire encryptie naar een veilige Base64 string voor C++
+                final_payload = base64.b64encode(encrypted_bytes).decode('utf-8')
+            except ValueError as e:
+                # WOLS CA Veiligheidsmechanisme: 
+                # RSA-2048 heeft een harde limiet van ~190 bytes per blok. 
+                # Als er te veel SeaWater posities zijn, past de JSON niet in één RSA-operatie.
+                self.logger.warning(f"⚠️ Payload te groot voor pure RSA. Terugval naar 1x encryptie (Transport Level). Overweeg Hybride AES-encryptie voor grote datasets: {e}")
+                is_encrypted = False
+
         envelope = {
             "header": {
                 "from": options.get("WolsCA_UploaderName", "ha_uploader"),
                 "timestamp": int(time.time()),
-                "encrypted": False
+                "encrypted": is_encrypted
             },
-            "payload": {
-                key: data 
-            }
+            "payload": final_payload 
         }
         
         topic = get_scrambled_path_helper(mailbox_id, key)
