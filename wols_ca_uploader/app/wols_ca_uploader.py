@@ -146,4 +146,43 @@ def main():
         else:
             password = get_secret("mqtt_password") or ""
         
-        clean_broker_ip, wols_ca_standard_url
+        clean_broker_ip, wols_ca_standard_url = sanitize_mqtt_broker_url(raw_broker, port)
+        set_mqtt_credentials(user, password, wols_ca_standard_url)
+        
+        product_key = ensure_product_key()
+        uploader_id = ensure_uploader_id()
+        
+        # WOLS CA Read-Only Uploader ID Exposure
+        if options.get("uploader_id") != uploader_id:
+            options["uploader_id"] = uploader_id
+            options_changed = True
+            logging.info(f"👁️ Wols CA UI: Uploader ID '{uploader_id}' actively enforced as read-only in config.")
+            
+        if options_changed:
+            with open(config_file, 'w') as f:
+                json.dump(options, f, indent=2)
+        
+        import mqtt_triggers
+        mqtt_triggers._router_instance = MQTTMessageRouter(current_version, product_key)
+
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata={'product_key': product_key, 'uploader_id': uploader_id, 'options': options})
+        if user and password: client.username_pw_set(user, password)
+
+        client.on_connect = on_connect
+        client.on_message = lambda c, u, m: handle_mqtt_message(c, m, current_version)
+        wols_ca_web_ui.set_interface_params(client)
+
+        logging.info(f"Connecting to {clean_broker_ip} via Secure Dynamic Key...")
+        
+        client.connect(clean_broker_ip, port, 60)
+        start_heartbeat(client, product_key, uploader_id) 
+        
+        threading.Thread(target=wols_ca_web_ui.start_web_server, daemon=True).start()
+        logging.info("Wols CA Ingress Web UI started.")
+        client.loop_forever()
+    except Exception as e:
+        logging.error(f"FATAL ERROR: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
