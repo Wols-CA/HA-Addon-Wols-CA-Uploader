@@ -40,12 +40,30 @@ def ensure_product_key():
         logging.info(f"🔑 Active Wols CA Product Key: {key}")
     return key
 
-def start_heartbeat(client, product_key, interval=60):
+# --- DE MISSENDE FUNCTIE ---
+def ensure_uploader_id():
+    """Genereert en bewaart een unieke ID voor déze specifieke Uploader instance."""
+    uid = get_secret("wols_ca_uploader_id")
+    if not uid:
+        uid = f"upl-{''.join(random.choices(string.ascii_lowercase + string.digits, k=6))}"
+        update_secret("wols_ca_uploader_id", uid)
+        logging.info(f"🆔 NIEUWE UPLOADER ID GEGENEREERD: {uid}")
+    else:
+        logging.info(f"🆔 Actieve Uploader ID: {uid}")
+    return uid
+# ---------------------------
+
+def start_heartbeat(client, product_key, uploader_id, interval=60):
     def heartbeat():
         while True:
             if client.is_connected():
-                payload = json.dumps({"status": "online", "timestamp": int(time.time()), "version": current_version})
-                topic = get_scrambled_path_helper(product_key, "uploader_status")
+                payload = json.dumps({
+                    "status": "online", 
+                    "uploader_id": uploader_id,
+                    "timestamp": int(time.time()), 
+                    "version": current_version
+                })
+                topic = get_scrambled_path_helper(product_key, f"status_{uploader_id}")
                 client.publish(topic, payload, qos=0, retain=False)
             time.sleep(interval)
     threading.Thread(target=heartbeat, daemon=True).start()
@@ -60,8 +78,14 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     if reason_code == 0:
         logging.info("Connected to Wols CA MQTT Broker.")
         product_key = userdata.get('product_key')
+        uploader_id = userdata.get('uploader_id')
         import hashlib
         mb_hash = hashlib.sha256(str(product_key).encode()).hexdigest()[:16]
+
+        # WOLS CA Targeted Mailbox Cleanup
+        logging.info(f"🧹 Initiating Cleanup for instance '{uploader_id}'...")
+        status_topic = get_scrambled_path_helper(product_key, f"status_{uploader_id}")
+        client.publish(status_topic, "", qos=1, retain=True)
 
         client.subscribe([
             ("wols_ca_mqtt/keys/public", 1),
@@ -107,10 +131,9 @@ def main():
         port = options.get("mqtt_port", 1883)
         user = options.get("mqtt_user")
         
-        # We houden bij of we het options.json bestand opnieuw moeten opslaan
         options_changed = False
         
-        # --- WOLS CA FIX 1: Credential Scrubbing ---
+        # WOLS CA Credential Scrubbing
         raw_password = options.get("mqtt_password", "")
         placeholder = "Safely stored by Wols CA Uploader"
         
@@ -122,49 +145,5 @@ def main():
             logging.info("🔒 Wols CA Security: MQTT Password moved to vault and scrubbed from UI config.")
         else:
             password = get_secret("mqtt_password") or ""
-        # --------------------------------------------
         
-        clean_broker_ip, wols_ca_standard_url = sanitize_mqtt_broker_url(raw_broker, port)
-        set_mqtt_credentials(user, password, wols_ca_standard_url)
-        
-        product_key = ensure_product_key()
-        uploader_id = ensure_uploader_id()
-        
-        # --- WOLS CA FIX 2: Read-Only Uploader ID Exposure ---
-        # Forceer de echte ID naar de Home Assistant configuratie UI.
-        # Als een gebruiker dit veld bewerkt, overschrijven we het hier meedogenloos.
-        if options.get("uploader_id") != uploader_id:
-            options["uploader_id"] = uploader_id
-            options_changed = True
-            logging.info(f"👁️ Wols CA UI: Uploader ID '{uploader_id}' actively enforced as read-only in config.")
-            
-        # Sla het bestand in één keer op als er wijzigingen (password of ID) waren
-        if options_changed:
-            with open(config_file, 'w') as f:
-                json.dump(options, f, indent=2)
-        # -----------------------------------------------------
-        
-        import mqtt_triggers
-        mqtt_triggers._router_instance = MQTTMessageRouter(current_version, product_key)
-
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata={'product_key': product_key, 'uploader_id': uploader_id, 'options': options})
-        if user and password: client.username_pw_set(user, password)
-
-        client.on_connect = on_connect
-        client.on_message = lambda c, u, m: handle_mqtt_message(c, m, current_version)
-        wols_ca_web_ui.set_interface_params(client)
-
-        logging.info(f"Connecting to {clean_broker_ip} via Secure Dynamic Key...")
-        
-        client.connect(clean_broker_ip, port, 60)
-        start_heartbeat(client, product_key, uploader_id) 
-        
-        threading.Thread(target=wols_ca_web_ui.start_web_server, daemon=True).start()
-        logging.info("Wols CA Ingress Web UI started.")
-        client.loop_forever()
-    except Exception as e:
-        logging.error(f"FATAL ERROR: {e}")
-        sys.exit(1)
-        
-if __name__ == "__main__":
-    main()
+        clean_broker_ip, wols_ca_standard_url
