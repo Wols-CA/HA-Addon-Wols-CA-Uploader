@@ -225,17 +225,19 @@ class MQTTMessageRouter:
     def _send_config_response(self, client, key, data):
         options = self._get_options()
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
-        import public_key_handler
         
-        # WOLS CA FIX: Gebruik de dynamische 'key' ("SeaWaterDetails") i.p.v. "payload"
-        # zodat de C++ ConfigManager exact weet voor welke module de data is.
+        # WOLS CA FIX: 
+        # 1. encrypted = False zodat C++ hem als leesbare JSON accepteert
+        # 2. we verpakken de specifieke data (SeaWaterDetails) veilig ín het "payload" object.
         envelope = {
             "header": {
                 "from": options.get("WolsCA_UploaderName", "ha_uploader"),
                 "timestamp": int(time.time()),
-                "encrypted": public_key_handler.active_public_key is not None
+                "encrypted": False
             },
-            key: data 
+            "payload": {
+                key: data 
+            }
         }
         
         topic = get_scrambled_path_helper(mailbox_id, key)
