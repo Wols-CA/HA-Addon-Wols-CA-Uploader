@@ -24,7 +24,6 @@ def register_new_session(client, server_name, new_session_topic):
     old_topic = shadow_registry.get(server_name)
     if old_topic and old_topic != new_session_topic:
         logging.info(f"🧹 Trace Wiping Actief: Oude sessie sporen van '{server_name}' worden vernietigd.")
-        # Publiceer lege, retained berichten om de MQTT topics te deleten
         for key in ["haservicesettings", "seawaterdetails", "spotifydetails"]:
             client.publish(f"{old_topic}/{key}", "", retain=True)
             
@@ -90,7 +89,8 @@ class MQTTMessageRouter:
         except Exception: return False
         
         if topic == "wols_ca_mqtt/keys/public":
-            public_key_handler.StepA_Process_PublicKey(client, msg, active_mqtt_user, active_mqtt_password, "localhost")
+            # WOLS CA FIX: Geef self.uploader_version mee aan Step A!
+            public_key_handler.StepA_Process_PublicKey(client, msg, active_mqtt_user, active_mqtt_password, "localhost", self.uploader_version)
             return True
             
         if topic == "wols_ca_mqtt/admin/service_verify":
@@ -106,7 +106,6 @@ class MQTTMessageRouter:
                 self._send_seawater_details(client)
             return True
         
-        # WOLS CA FIX: Luisteren op de willekeurige sessie paden voor inkomende verzoeken
         if topic.startswith("wols_ca_mqtt/session/") and topic.endswith("/requests"):
             if "REQ_CONFIG_SEAWATER" in payload_str:
                 self.logger.info("📥 C++ Service requested SeaWater data on Ephemeral Channel. Resending...")
@@ -145,10 +144,8 @@ class MQTTMessageRouter:
                 envelope[key] = data
         else: envelope[key] = data
             
-        # WOLS CA FIX: Push naar alle actieve Ephemeral Sessies uit het geheugen!
         global shadow_registry
         if not shadow_registry:
-            # Fallback als er nog geen sessie is (bijv. tijdens opstart)
             topic = get_scrambled_path_helper(self.product_key, key)
             client.publish(topic, json.dumps(envelope), qos=1, retain=True)
         else:
