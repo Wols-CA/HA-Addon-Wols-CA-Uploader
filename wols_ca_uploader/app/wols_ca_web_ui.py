@@ -1,4 +1,5 @@
 import logging
+import json
 from flask import Flask, request, redirect, url_for, render_template_string
 import secrets_handler
 
@@ -14,7 +15,7 @@ TAB_INFO = {
 }
 BASE_TABS = list(TAB_INFO.keys())
 
-# --- WOLS CA HTML TEMPLATE ---
+# --- WOLS CA HTML TEMPLATE (Clean Version zonder Grafieken) ---
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -123,15 +124,21 @@ DASHBOARD_HTML = """
         <h3>Actieve Sea Water Sensoren</h3>
         <p>Overzicht van de sensoren die momenteel via MQTT gepusht worden naar de C++ Service.</p>
         <table>
-            <tr><th>Sensor ID</th><th>GPS Coördinaten</th><th>Verwachte Node</th></tr>
-            {% for pos in sw_positions %}
+            <tr><th>Sensor ID</th><th>GPS Coördinaten</th><th>Laatst Ontvangen Temperatuur</th></tr>
+            {% for sensor in sw_data_list %}
             <tr>
-                <td>Positie {{ loop.index }}</td>
-                <td><code>{{ pos }}</code></td>
-                <td>Wols CA SeaWater System</td>
+                <td>Positie {{ sensor.id }}</td>
+                <td><code>{{ sensor.pos }}</code></td>
+                <td style="font-weight: bold; color: #0056b3;">
+                    {% if sensor.last_temp != None %}
+                        {{ "%.1f"|format(sensor.last_temp) }} °C
+                    {% else %}
+                        <span style="color: #999; font-style: italic;">Wachten op Edge Node...</span>
+                    {% endif %}
+                </td>
             </tr>
             {% endfor %}
-            {% if not sw_positions %}
+            {% if not sw_data_list %}
             <tr><td colspan="3">Geen posities geconfigureerd.</td></tr>
             {% endif %}
         </table>
@@ -219,10 +226,26 @@ def get_template_data():
     try: sp_count = int(secrets_handler.get_secret("PlaylistSets") or 0)
     except ValueError: sp_count = 0
 
-    sw_positions = []
+    sw_data_list = []
     for i in range(1, sw_count + 1):
         pos = secrets_handler.get_secret(f"Position{i}")
-        if pos: sw_positions.append(pos)
+        if pos: 
+            # Lees een eventuele status uit de kluis om in de tabel te tonen
+            raw_state = secrets_handler.get_secret(f"State_Position{i}")
+            last_temp = None
+            if raw_state:
+                try:
+                    state_json = json.loads(raw_state)
+                    last_temp = state_json.get("temp")
+                except json.JSONDecodeError:
+                    try: last_temp = float(raw_state)
+                    except: pass
+            
+            sw_data_list.append({
+                "id": i,
+                "pos": pos,
+                "last_temp": last_temp
+            })
 
     sp_sets = []
     for i in range(1, sp_count + 1):
@@ -247,7 +270,7 @@ def get_template_data():
     return {
         "sw_count": sw_count,
         "sp_count": sp_count,
-        "sw_positions": sw_positions,
+        "sw_data_list": sw_data_list,
         "sp_sets": sp_sets,
         "tab_order": tab_list,
         "default_tab": default_tab,
@@ -324,7 +347,7 @@ def update_sp_config():
     return redirect(url_for('dashboard', msg="✅ Spotify Configuratie opgeslagen en gepusht!"))
 
 def start_web_server():
-    logging.info("Starting Wols CA Ingress Web UI with Dynamic Reordering...")
+    logging.info("Starting Wols CA Ingress Web UI (Clean Version)...")
     app.run(host='0.0.0.0', port=8099, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
