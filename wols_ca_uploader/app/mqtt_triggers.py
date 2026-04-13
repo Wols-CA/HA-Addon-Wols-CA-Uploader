@@ -222,7 +222,7 @@ class MQTTMessageRouter:
 
         return False
 
-def _send_config_response(self, client, key, data):
+    def _send_config_response(self, client, key, data):
         options = self._get_options()
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
         
@@ -251,9 +251,6 @@ def _send_config_response(self, client, key, data):
                 # Converteer de binaire encryptie naar een veilige Base64 string voor C++
                 final_payload = base64.b64encode(encrypted_bytes).decode('utf-8')
             except ValueError as e:
-                # WOLS CA Veiligheidsmechanisme: 
-                # RSA-2048 heeft een harde limiet van ~190 bytes per blok. 
-                # Als er te veel SeaWater posities zijn, past de JSON niet in één RSA-operatie.
                 self.logger.warning(f"⚠️ Payload te groot voor pure RSA. Terugval naar 1x encryptie (Transport Level). Overweeg Hybride AES-encryptie voor grote datasets: {e}")
                 is_encrypted = False
 
@@ -320,9 +317,3 @@ def _send_config_response(self, client, key, data):
             "Timestamp": int(time.time())
         }
         self._send_config_response(client, "SpotifyDetails", payload)
-
-def handle_mqtt_message(client, msg, uploader_version):
-    global _router_instance
-    if _router_instance is None:
-        _router_instance = MQTTMessageRouter(uploader_version)
-    return _router_instance.route_message(client, msg)
