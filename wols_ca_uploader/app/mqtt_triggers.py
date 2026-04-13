@@ -15,6 +15,22 @@ active_mqtt_user = None
 active_mqtt_password = None
 _router_instance = None
 
+# WOLS CA SHADOW REGISTRY: Mapping van "LocalServerName" naar "Ephemeral Session Topic"
+shadow_registry = {}
+
+def register_new_session(client, server_name, new_session_topic):
+    """Wist oude MQTT sporen en registreert de nieuwe sessie (Trace Wiping)"""
+    global shadow_registry
+    old_topic = shadow_registry.get(server_name)
+    if old_topic and old_topic != new_session_topic:
+        logging.info(f"🧹 Trace Wiping Actief: Oude sessie sporen van '{server_name}' worden vernietigd.")
+        # Publiceer lege, retained berichten om de MQTT topics te deleten
+        for key in ["haservicesettings", "seawaterdetails", "spotifydetails"]:
+            client.publish(f"{old_topic}/{key}", "", retain=True)
+            
+    shadow_registry[server_name] = new_session_topic
+    logging.info(f"🔗 Hub-and-Spoke: '{server_name}' gekoppeld aan onzichtbaar kanaal: {new_session_topic}")
+
 def set_mqtt_credentials(user, password):
     global active_mqtt_user, active_mqtt_password
     active_mqtt_user = user
@@ -73,8 +89,6 @@ class MQTTMessageRouter:
             payload_str = msg.payload.decode().strip()
         except Exception: return False
         
-        request_path = get_scrambled_path_helper(self.product_key, "requests")
-
         if topic == "wols_ca_mqtt/keys/public":
             public_key_handler.StepA_Process_PublicKey(client, msg, active_mqtt_user, active_mqtt_password, "localhost")
             return True
@@ -86,43 +100,17 @@ class MQTTMessageRouter:
         if topic == "wols_ca_mqtt/admin/password_ack":
             public_key_handler.handle_ack(payload_str)
             if payload_str == "ACK":
-                self.logger.info("🚀 C++ Service is Ready! Actively pushing Wols CA Configuration...")
+                self.logger.info("🚀 Actively pushing Wols CA Configuration to Shadow Registry Sessions...")
                 self._send_ha_service_settings(client)
                 self._send_spotify_details(client)
                 self._send_seawater_details(client)
             return True
         
-        if topic == request_path:
+        # WOLS CA FIX: Luisteren op de willekeurige sessie paden voor inkomende verzoeken
+        if topic.startswith("wols_ca_mqtt/session/") and topic.endswith("/requests"):
             if "REQ_CONFIG_SEAWATER" in payload_str:
-                self.logger.info("📥 C++ Service requested SeaWater data. Resending from secrets...")
+                self.logger.info("📥 C++ Service requested SeaWater data on Ephemeral Channel. Resending...")
                 self._send_seawater_details(client)
-            return True
-
-        sw_data_hash = hashlib.sha256("seawater_sensor_data".encode()).hexdigest()[:16]
-        if sw_data_hash in topic:
-            try:
-                envelope = json.loads(payload_str)
-                data_str = envelope.get("data", "")
-                sig = envelope.get("signature", "")
-                
-                raw_hash = hashlib.sha256((data_str + active_mqtt_password).encode('utf-8'))
-                if sig.lower() == raw_hash.hexdigest().lower() or sig == base64.b64encode(raw_hash.digest()).decode('utf-8'):
-                    data = json.loads(data_str)
-                    node_id = data.get("id")
-                    temp = data.get("temperature")
-                    ha_base_topic = f"wols_ca_mqtt/ha/seawater/temp/{node_id}".lower()
-                    client.publish(ha_base_topic, str(temp), retain=True)
-                    self.logger.info(f"📍 SeaWater data securely forwarded to HA for: {data.get('name')} ({temp}°C)")
-            except Exception as e: pass
-            return True
-
-        key_rotation_hash = hashlib.sha256("key_rotation".encode()).hexdigest()[:16]
-        if key_rotation_hash in topic:
-            try:
-                payload_data = json.loads(payload_str)
-                if new_key := payload_data.get("payload", {}).get("new_public_key"):
-                    public_key_handler.update_rolling_key(new_key)
-            except Exception: pass
             return True
 
         if "/set/" in topic:
@@ -157,8 +145,16 @@ class MQTTMessageRouter:
                 envelope[key] = data
         else: envelope[key] = data
             
-        topic = get_scrambled_path_helper(self.product_key, key)
-        client.publish(topic, json.dumps(envelope), qos=1, retain=True)
+        # WOLS CA FIX: Push naar alle actieve Ephemeral Sessies uit het geheugen!
+        global shadow_registry
+        if not shadow_registry:
+            # Fallback als er nog geen sessie is (bijv. tijdens opstart)
+            topic = get_scrambled_path_helper(self.product_key, key)
+            client.publish(topic, json.dumps(envelope), qos=1, retain=True)
+        else:
+            for server_name, session_topic in shadow_registry.items():
+                dynamic_topic = f"{session_topic}/{key.lower()}"
+                client.publish(dynamic_topic, json.dumps(envelope), qos=1, retain=True)
 
     def _send_ha_service_settings(self, client):
         self._send_config_response(client, "HAServiceSettings", {"MqttUser": active_mqtt_user, "MqttPassword": active_mqtt_password, "ProductKey": self.product_key})

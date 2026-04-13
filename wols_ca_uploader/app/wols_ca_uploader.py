@@ -67,8 +67,7 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
             ("wols_ca_mqtt/keys/public", 1),
             ("wols_ca_mqtt/admin/service_verify", 1), 
             ("wols_ca_mqtt/admin/password_ack", 1),
-            (get_scrambled_path_helper(product_key, "key_rotation"), 1),
-            (get_scrambled_path_helper(product_key, "requests"), 1),
+            ("wols_ca_mqtt/session/#", 1),  # WOLS CA FIX: Luister naar ALLE actieve Ephemeral kanalen!
             (f"wols_ca_mqtt/mb/{mb_hash}/+/set/#", 1)
         ])  
         
