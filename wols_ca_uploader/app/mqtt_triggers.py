@@ -24,41 +24,27 @@ def get_scrambled_path_helper(mailbox_id, sub_topic):
     return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
 
 def parse_google_maps_coordinates(coord_str):
-    """
-    Slimme Wols CA filter: Zet Google Maps formaten om naar decimale C++ standaard.
-    Ondersteunt:
-    - Decimaal: "43.0828, 6.0656"
-    - Graden/Min/Sec: "43°04'58.1\"N 6°03'56.2\"E"
-    """
+    """Slimme Wols CA filter: Zet Google Maps formaten om naar decimale C++ standaard."""
     if not coord_str:
         return None
     coord_str = coord_str.strip()
     
-    # 1. Check voor standaard decimale invoer (bijv. "43.0828, 6.0656")
     decimal_match = re.match(r"^\s*(-?\d+\.\d+)[,\s]+(-?\d+\.\d+)\s*$", coord_str)
     if decimal_match:
         return f"{decimal_match.group(1)}, {decimal_match.group(2)}"
         
-    # 2. Check voor Google Maps DMS invoer (bijv. 43°04'58.1"N 6°03'56.2"E)
     dms_pattern = r"(\d+)[°\s]+(\d+)['\s]+([\d\.]+)(?:\"|''|\s)*([NS])[,\s]*(\d+)[°\s]+(\d+)['\s]+([\d\.]+)(?:\"|''|\s)*([EW])"
     dms_match = re.search(dms_pattern, coord_str, re.IGNORECASE)
     
     if dms_match:
         lat_d, lat_m, lat_s, lat_dir, lon_d, lon_m, lon_s, lon_dir = dms_match.groups()
-        
-        # Converteer Latitude
         lat = float(lat_d) + float(lat_m)/60 + float(lat_s)/3600
-        if lat_dir.upper() == 'S':
-            lat = -lat
-            
-        # Converteer Longitude
+        if lat_dir.upper() == 'S': lat = -lat
         lon = float(lon_d) + float(lon_m)/60 + float(lon_s)/3600
-        if lon_dir.upper() == 'W':
-            lon = -lon
-            
+        if lon_dir.upper() == 'W': lon = -lon
         return f"{round(lat, 6)}, {round(lon, 6)}"
         
-    return None # Onbekend formaat, blokkeer verzending naar C++
+    return None 
 
 def publish_dashboard_discovery(client):
     """Genereert discovery velden voor HA."""
@@ -129,9 +115,7 @@ class MQTTMessageRouter:
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
         request_path = get_scrambled_path_helper(mailbox_id, "requests")
 
-        # --- WOLS CA HANDSHAKE ROUTING ---
         if topic == "wols_ca_mqtt/keys/public":
-            options = self._get_options()
             url = options.get("mqtt_broker", "localhost")
             import public_key_handler
             public_key_handler.StepA_Process_PublicKey(client, msg, active_mqtt_user, active_mqtt_password, url)
@@ -147,14 +131,12 @@ class MQTTMessageRouter:
             public_key_handler.handle_ack(payload_str)
             return True
         
-        # --- WOLS CA PULL HANDLER ---
         if topic == request_path:
             if "REQ_CONFIG_SEAWATER" in payload_str:
                 self.logger.info("📥 C++ Service requested SeaWater data. Resending from secrets...")
                 self._send_seawater_details(client)
             return True
 
-        # --- UPLOAD SEAWATER TO HA ---
         sw_data_hash = hashlib.sha256("seawater_sensor_data".encode()).hexdigest()[:16]
         if sw_data_hash in topic:
             try:
@@ -162,7 +144,6 @@ class MQTTMessageRouter:
                 data_str = envelope.get("data", "")
                 sig = envelope.get("signature", "")
                 
-                # Robuuste Wols CA verificatie
                 raw_hash = hashlib.sha256((data_str + active_mqtt_password).encode('utf-8'))
                 expected_hex = raw_hash.hexdigest().lower()
                 import base64
@@ -172,11 +153,9 @@ class MQTTMessageRouter:
                     data = json.loads(data_str)
                     node_id = data.get("id")
                     temp = data.get("temperature")
-                    
                     maps_url = data.get("google_maps")
                     todo_url = data.get("things_to_do")
                     
-                    # Generates interactive buttons for HA Markdown Cards!
                     markdown_buttons = (
                         f"[![Google Maps](https://img.shields.io/badge/Google%20Maps-Open-4285F4?style=for-the-badge&logo=googlemaps&logoColor=white)]({maps_url})  "
                         f"[![Things to Do](https://img.shields.io/badge/Things%20to%20Do-Explore-FF69B4?style=for-the-badge&logo=tripadvisor&logoColor=white)]({todo_url})"
@@ -193,7 +172,6 @@ class MQTTMessageRouter:
                     }
                     
                     ha_base_topic = f"wols_ca_mqtt/ha/seawater/temp/{node_id}"
-                    
                     client.publish(ha_base_topic, str(temp), retain=True)
                     client.publish(f"{ha_base_topic}/attributes", json.dumps(attributes), retain=True)
                     
@@ -204,7 +182,6 @@ class MQTTMessageRouter:
                 self.logger.error(f"Error parsing SeaWater data: {e}")
             return True
 
-        # --- JITTER ROUTING ---
         key_rotation_hash = hashlib.sha256("key_rotation".encode()).hexdigest()[:16]
         if key_rotation_hash in topic:
             try:
@@ -217,27 +194,21 @@ class MQTTMessageRouter:
                 self.logger.error(f"Error processing Rolling Key: {e}")
             return True
 
-        # Handle incoming UI commands (Set)
         if "/set/" in topic:
             field_name = topic.split("/")[-1]
-            
-            # Standaard nemen we de ruwe tekst aan
             value_to_store = payload_str
             
-            # WOLS CA UX FIX: Als het een SeaWater coördinaat is, poets hem direct op!
             if "Position" in field_name:
                 parsed_val = parse_google_maps_coordinates(payload_str)
                 if parsed_val is not None:
                     value_to_store = parsed_val
                 else:
                     self.logger.error(f"❌ Ongeldige coördinaten invoer geweigerd: {payload_str}")
-                    # Stop hier, we sturen geen onzin naar Home Assistant of de C++ Service
                     return True 
 
             from secrets_handler import update_secret
             if update_secret(field_name, value_to_store):
                 self.logger.info(f"📍 Securely stored {field_name}")
-                # HA updaten met de (nu schone) waarde!
                 state_topic = topic.replace("/set/", "/state/")
                 client.publish(state_topic, value_to_store, retain=True)
 
@@ -276,7 +247,7 @@ class MQTTMessageRouter:
             "payload": data
         }
         topic = get_scrambled_path_helper(mailbox_id, key)
-        client.publish(topic, json.dumps(envelope), retain=False)
+        client.publish(topic, json.dumps(envelope), qos=1, retain=True)
 
     def _send_ha_service_settings(self, client):
         options = self._get_options()
@@ -287,8 +258,7 @@ class MQTTMessageRouter:
         }
         self._send_config_response(client, "HAServiceSettings", data)
 
-def _send_seawater_details(self, client):
-        # We halen het aantal sensoren op uit de Web UI instellingen
+    def _send_seawater_details(self, client):
         num_sensors = secrets_handler.get_secret("SeaWaterNumber")
         if num_sensors is None:
             num_sensors = 0
@@ -298,7 +268,6 @@ def _send_seawater_details(self, client):
         
         for i in range(1, num_sensors + 1):
             raw_val = secrets_handler.get_secret(f"Position{i}")
-            # Poets de coördinaten op naar digitaal voor C++
             parsed_val = parse_google_maps_coordinates(raw_val)
             if parsed_val:
                 posities.append({"id": i, "value": parsed_val})
@@ -309,17 +278,16 @@ def _send_seawater_details(self, client):
             "Timestamp": int(time.time())
         }
         
-        # Verstuur naar de C++ SeaWaterDetails mailbox
         self._send_config_response(client, "SeaWaterDetails", payload)
 
     def _send_spotify_details(self, client):
-        options = self._get_options()
-        if not options.get("SpotifyEnabled", False):
-            self._send_config_response(client, "SpotifyDetails", {"Enabled": False})
-            return
+        num_sets = secrets_handler.get_secret("PlaylistSets")
+        if num_sets is None:
+            num_sets = 0
 
+        num_sets = int(num_sets)
         sets = []
-        num_sets = int(options.get("PlaylistSets", 0))
+        
         for i in range(1, num_sets + 1):
             src = secrets_handler.get_secret(f"SourceID{i}")
             tgt = secrets_handler.get_secret(f"TargetID{i}")
