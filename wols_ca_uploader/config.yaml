@@ -1,5 +1,5 @@
 name: "Wols CA MQTT Automation Uploader"
-version: "0.5.5"
+version: "0.5.6"
 slug: "wols_ca_uploader"
 description: "Secure Vault and Uploader for Wols CA C++ services"
 arch:
@@ -32,6 +32,7 @@ options:
   SeaWaterNumber: 0
   SensorInterval: 30
 schema:
+  uploader_id: str?
   mqtt_broker: str
   mqtt_port: int
   mqtt_user: str?
