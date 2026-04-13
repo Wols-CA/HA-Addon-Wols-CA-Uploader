@@ -18,8 +18,6 @@ def set_mqtt_credentials(user, password):
     active_mqtt_password = password
 
 def get_scrambled_path_helper(mailbox_id, sub_topic):
-    """Berekent het troebele pad conform de Wols CA standaard."""
-    # WOLS CA FIX: str() forceert type safety voor hashing
     mb_hash = hashlib.sha256(str(mailbox_id).encode()).hexdigest()[:16]
     sub_hash = hashlib.sha256(str(sub_topic).encode()).hexdigest()[:16]
     return f"wols_ca_mqtt/mb/{mb_hash}/{sub_hash}"
@@ -128,7 +126,6 @@ class MQTTMessageRouter:
         if topic == "wols_ca_mqtt/admin/password_ack":
             import public_key_handler
             public_key_handler.handle_ack(payload_str)
-            # WOLS CA FIX: Actief direct de configuratie pushen na succes
             if payload_str == "ACK":
                 self.logger.info("🚀 C++ Service is Ready! Actively pushing Wols CA Configuration...")
                 self._send_ha_service_settings(client)
@@ -229,14 +226,18 @@ class MQTTMessageRouter:
         options = self._get_options()
         mailbox_id = options.get("WolsCA_MailboxID", "88889999")
         import public_key_handler
+        
+        # WOLS CA FIX: Gebruik de dynamische 'key' ("SeaWaterDetails") i.p.v. "payload"
+        # zodat de C++ ConfigManager exact weet voor welke module de data is.
         envelope = {
             "header": {
                 "from": options.get("WolsCA_UploaderName", "ha_uploader"),
                 "timestamp": int(time.time()),
                 "encrypted": public_key_handler.active_public_key is not None
             },
-            "payload": data
+            key: data 
         }
+        
         topic = get_scrambled_path_helper(mailbox_id, key)
         client.publish(topic, json.dumps(envelope), qos=1, retain=True)
 
