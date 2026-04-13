@@ -18,8 +18,14 @@ import yaml
 import paho.mqtt.client as mqtt
 
 # Local module imports
-import mqtt_triggers
-import secrets_handler
+from mqtt_triggers import (
+    handle_mqtt_message, 
+    set_mqtt_credentials, 
+    publish_dashboard_discovery, 
+    MQTTMessageRouter,
+    get_scrambled_path_helper
+)
+from secrets_handler import get_secret
 import wols_ca_web_ui
 
 current_version = "Unknown"
