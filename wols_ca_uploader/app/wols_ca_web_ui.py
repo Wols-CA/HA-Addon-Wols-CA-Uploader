@@ -6,7 +6,6 @@ app = Flask(__name__)
 app.logger.setLevel(logging.ERROR)
 mqtt_client_instance = None
 
-# Tab definities
 TAB_INFO = {
     "SW_Status": "Sea Water Temperature",
     "SP_Status": "Spotify Playlists Status",
@@ -70,7 +69,6 @@ DASHBOARD_HTML = """
         }
         
         window.onload = function() {
-            // Wols CA Single Source of Truth: Backend bepaalt de default tab
             var defaultTab = "{{ default_tab }}";
             if (document.getElementById("btn_" + defaultTab)) {
                 openTab(null, defaultTab);
@@ -172,7 +170,7 @@ DASHBOARD_HTML = """
             <div class="form-group">
                 <h4>Positie {{ i }}</h4>
                 <label>Google Maps Coördinaten (bijv. 43.08279, 6.06561):</label>
-                <input type="text" name="Position{{ i }}" value="{{ secrets.get('Position' ~ i, '') }}">
+                <input type="text" name="Position{{ i }}" value="{{ get_secret('Position' ~ i) or '' }}">
             </div>
             {% endfor %}
             
@@ -193,11 +191,11 @@ DASHBOARD_HTML = """
             <div class="form-group">
                 <h4>Playlist Set {{ i }}</h4>
                 <label>Source ID (Originele Playlist):</label>
-                <input type="text" name="SourceID{{ i }}" value="{{ secrets.get('SourceID' ~ i, '') }}">
+                <input type="text" name="SourceID{{ i }}" value="{{ get_secret('SourceID' ~ i) or '' }}">
                 <label>Target ID (Doel Playlist):</label>
-                <input type="text" name="TargetID{{ i }}" value="{{ secrets.get('TargetID' ~ i, '') }}">
+                <input type="text" name="TargetID{{ i }}" value="{{ get_secret('TargetID' ~ i) or '' }}">
                 <label>PlayTime (Minuten):</label>
-                <input type="number" name="PlayTime{{ i }}" value="{{ secrets.get('PlayTime' ~ i, '') }}">
+                <input type="number" name="PlayTime{{ i }}" value="{{ get_secret('PlayTime' ~ i) or '' }}">
             </div>
             {% endfor %}
             
@@ -215,7 +213,6 @@ def set_interface_params(client):
     mqtt_client_instance = client
 
 def get_template_data():
-    """Haalt alle data uit de kluis om de HTML velden te vullen."""
     try: sw_count = int(secrets_handler.get_secret("SeaWaterNumber") or 0)
     except ValueError: sw_count = 0
     
@@ -234,11 +231,9 @@ def get_template_data():
         tm = secrets_handler.get_secret(f"PlayTime{i}")
         if src or tgt: sp_sets.append({"source": src, "target": tgt, "time": tm})
 
-    # WOLS CA UI Reordering Logica ophalen
     saved_order = secrets_handler.get_secret("UI_TabOrder")
     if saved_order:
         tab_list = saved_order.split(",")
-        # Corruptie check: zorg dat alle base tabs bestaan
         tab_list = [t for t in tab_list if t in BASE_TABS]
         for t in BASE_TABS:
             if t not in tab_list: tab_list.append(t)
@@ -249,17 +244,15 @@ def get_template_data():
     if not default_tab or default_tab not in BASE_TABS:
         default_tab = tab_list[0]
 
-    all_secrets = {k: secrets_handler.get_secret(k) for k in secrets_handler._secrets_cache.keys()}
-
     return {
         "sw_count": sw_count,
         "sp_count": sp_count,
         "sw_positions": sw_positions,
         "sp_sets": sp_sets,
-        "secrets": all_secrets,
         "tab_order": tab_list,
         "default_tab": default_tab,
-        "tab_names": TAB_INFO
+        "tab_names": TAB_INFO,
+        "get_secret": secrets_handler.get_secret
     }
 
 @app.route('/')
@@ -270,30 +263,25 @@ def dashboard():
 
 @app.route('/update_ui_prefs', methods=['POST'])
 def update_ui_prefs():
-    """Wols CA Logica voor het dynamisch swappen van UI Tabs en Defaults"""
     source_tab = request.form.get("source_tab")
     new_pos_str = request.form.get("new_pos")
     set_default = request.form.get("set_default")
     
-    # 1. Update de Default Tab (Checkbox/Radio trigger)
     if set_default in BASE_TABS:
         secrets_handler.update_secret("UI_DefaultTab", set_default)
     
-    # 2. Re-order de tabs (Select trigger)
     if source_tab in BASE_TABS and new_pos_str is not None:
         try:
             new_pos = int(new_pos_str)
             saved_order = secrets_handler.get_secret("UI_TabOrder")
             tab_list = saved_order.split(",") if saved_order else BASE_TABS.copy()
             
-            # Valideer en repareer de lijst
             tab_list = [t for t in tab_list if t in BASE_TABS]
             for t in BASE_TABS:
                 if t not in tab_list: tab_list.append(t)
                 
             old_pos = tab_list.index(source_tab)
             if old_pos != new_pos and 0 <= new_pos < len(tab_list):
-                # De Wols CA Swap logica
                 tab_list.pop(old_pos)
                 tab_list.insert(new_pos, source_tab)
                 secrets_handler.update_secret("UI_TabOrder", ",".join(tab_list))
