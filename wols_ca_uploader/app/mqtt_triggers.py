@@ -262,3 +262,53 @@ class MQTTMessageRouter:
             "MqttPassword": active_mqtt_password,
             "MailboxID": options.get("WolsCA_MailboxID", "88889999")
         }
+        self._send_config_response(client, "HAServiceSettings", data)
+
+    def _send_seawater_details(self, client):
+        num_sensors = secrets_handler.get_secret("SeaWaterNumber")
+        if num_sensors is None:
+            num_sensors = 0
+        
+        num_sensors = int(num_sensors)
+        posities = []
+        
+        for i in range(1, num_sensors + 1):
+            raw_val = secrets_handler.get_secret(f"Position{i}")
+            parsed_val = parse_google_maps_coordinates(raw_val)
+            if parsed_val:
+                posities.append({"id": i, "value": parsed_val})
+
+        payload = {
+            "Enabled": True,
+            "Sensors": posities,
+            "Timestamp": int(time.time())
+        }
+        self._send_config_response(client, "SeaWaterDetails", payload)
+
+    def _send_spotify_details(self, client):
+        options = self._get_options()
+        if not options.get("SpotifyEnabled", False):
+            self._send_config_response(client, "SpotifyDetails", {"Enabled": False})
+            return
+
+        sets = []
+        num_sets = int(options.get("PlaylistSets", 0))
+        for i in range(1, num_sets + 1):
+            src = secrets_handler.get_secret(f"SourceID{i}")
+            tgt = secrets_handler.get_secret(f"TargetID{i}")
+            tm  = secrets_handler.get_secret(f"PlayTime{i}")
+            if src and tgt:
+                sets.append({"source": src, "target": tgt, "play_time": tm})
+
+        payload = {
+            "Enabled": True, 
+            "Sets": sets,
+            "Timestamp": int(time.time())
+        }
+        self._send_config_response(client, "SpotifyDetails", payload)
+
+def handle_mqtt_message(client, msg, uploader_version):
+    global _router_instance
+    if _router_instance is None:
+        _router_instance = MQTTMessageRouter(uploader_version)
+    return _router_instance.route_message(client, msg)
