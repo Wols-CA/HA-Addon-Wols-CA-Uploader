@@ -5,17 +5,16 @@ import time
 import hashlib
 import re
 import base64
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
 
 import secrets_handler
 import public_key_handler
 
 active_mqtt_user = None
 active_mqtt_password = None
+active_mqtt_broker = "localhost" # WOLS CA FIX: Nu ook de broker opslaan
 _router_instance = None
 
-# WOLS CA SHADOW REGISTRY: Mapping van "LocalServerName" naar "Ephemeral Session Topic"
+# WOLS CA SHADOW REGISTRY
 shadow_registry = {}
 
 def register_new_session(client, server_name, new_session_topic):
@@ -30,10 +29,12 @@ def register_new_session(client, server_name, new_session_topic):
     shadow_registry[server_name] = new_session_topic
     logging.info(f"🔗 Hub-and-Spoke: '{server_name}' gekoppeld aan onzichtbaar kanaal: {new_session_topic}")
 
-def set_mqtt_credentials(user, password):
-    global active_mqtt_user, active_mqtt_password
+# WOLS CA FIX: Accepteert nu 3 argumenten, inclusief de broker URL
+def set_mqtt_credentials(user, password, broker="localhost"):
+    global active_mqtt_user, active_mqtt_password, active_mqtt_broker
     active_mqtt_user = user
     active_mqtt_password = password
+    active_mqtt_broker = broker
 
 def get_scrambled_path_helper(product_key, sub_topic):
     mb_hash = hashlib.sha256(str(product_key).encode()).hexdigest()[:16]
@@ -89,8 +90,8 @@ class MQTTMessageRouter:
         except Exception: return False
         
         if topic == "wols_ca_mqtt/keys/public":
-            # WOLS CA FIX: Geef self.uploader_version mee aan Step A!
-            public_key_handler.StepA_Process_PublicKey(client, msg, active_mqtt_user, active_mqtt_password, "localhost", self.uploader_version)
+            # Geef active_mqtt_broker mee aan Phase A
+            public_key_handler.StepA_Process_PublicKey(client, msg, active_mqtt_user, active_mqtt_password, active_mqtt_broker, self.uploader_version)
             return True
             
         if topic == "wols_ca_mqtt/admin/service_verify":
@@ -134,12 +135,10 @@ class MQTTMessageRouter:
         
         if is_encrypted:
             try:
-                encrypted_bytes = public_key_handler.active_public_key.encrypt(
-                    inner_payload_str.encode('utf-8'),
-                    padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
-                )
-                envelope[key] = base64.b64encode(encrypted_bytes).decode('utf-8')
-            except ValueError:
+                # WOLS CA FIX: Gebruik hier de bulk_encrypt_for_service uit de vorige ronde
+                envelope[key] = public_key_handler.bulk_encrypt_for_service(inner_payload_str)
+            except Exception as e:
+                self.logger.error(f"Fout tijdens bulk encryptie: {e}")
                 envelope["header"]["encrypted"] = False
                 envelope[key] = data
         else: envelope[key] = data
