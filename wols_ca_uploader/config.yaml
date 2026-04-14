@@ -1,7 +1,7 @@
 name: "Wols CA MQTT Automation Uploader"
-version: "0.6.3"
+version: "0.7.0"
 slug: "wols_ca_uploader"
-description: "Secure Vault and Uploader for Wols CA C++ services"
+description: "Dual-Broker Secure Vault & DMZ Bridge for Wols CA C++ services"
 arch:
   - aarch64
   - amd64
@@ -15,10 +15,17 @@ panel_icon: mdi:security
 panel_title: "a Wols CA System"
 # --------------------------------
 options:
-  mqtt_broker: ""
-  mqtt_port: 1883
-  mqtt_user: ""
-  mqtt_password: ""
+  # Externe Broker (EMQX - Zero Trust)
+  mqtt_ext_broker: ""
+  mqtt_ext_port: 1883
+  mqtt_ext_user: ""
+  mqtt_ext_password: ""
+  # Interne Broker (Home Assistant Mosquitto - Safe Zone)
+  mqtt_int_broker: "core-mosquitto"
+  mqtt_int_port: 1883
+  mqtt_int_user: "addons"
+  mqtt_int_password: ""
+  
   WolsCA_Service_InstanceID: "WolsHub01"
   ConsoleToMqtt: false
   LogModus: "INFO"
@@ -33,10 +40,14 @@ options:
   SensorInterval: 30
 schema:
   uploader_id: str?
-  mqtt_broker: str
-  mqtt_port: int
-  mqtt_user: str?
-  mqtt_password: password?
+  mqtt_ext_broker: str
+  mqtt_ext_port: int
+  mqtt_ext_user: str?
+  mqtt_ext_password: password?
+  mqtt_int_broker: str
+  mqtt_int_port: int
+  mqtt_int_user: str?
+  mqtt_int_password: password?
   WolsCA_Service_InstanceID: str
   ConsoleToMqtt: bool
   LogModus: match(^(NOLOG|WARNING|ERROR|DEBUG|INFO)$)
