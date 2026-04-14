@@ -11,7 +11,7 @@ import public_key_handler
 
 active_mqtt_user = None
 active_mqtt_password = None
-active_mqtt_broker = "localhost" # WOLS CA FIX: Nu ook de broker opslaan
+active_mqtt_broker = "localhost" 
 _router_instance = None
 
 # WOLS CA SHADOW REGISTRY
@@ -29,7 +29,6 @@ def register_new_session(client, server_name, new_session_topic):
     shadow_registry[server_name] = new_session_topic
     logging.info(f"🔗 Hub-and-Spoke: '{server_name}' gekoppeld aan onzichtbaar kanaal: {new_session_topic}")
 
-# WOLS CA FIX: Accepteert nu 3 argumenten, inclusief de broker URL
 def set_mqtt_credentials(user, password, broker="localhost"):
     global active_mqtt_user, active_mqtt_password, active_mqtt_broker
     active_mqtt_user = user
@@ -76,6 +75,12 @@ def publish_dashboard_discovery(client):
             client.publish(f"homeassistant/text/wols_ca/spot_{field.lower()}_{i}/config".lower(), json.dumps(spot_payload), retain=True)
     logging.info("🚀 Dashboard Discovery: Secure entities registered via Dynamic Product Key.")
 
+def cleanup_old_discovery(client):
+    """Wist alle oude Wols CA sensoren uit Home Assistant om duplicaten te voorkomen."""
+    logging.info("🧹 Wols CA Cleanup: Wiping old MQTT Discovery entities...")
+    client.publish("homeassistant/sensor/wols_ca/#", "", retain=True)
+    client.publish("homeassistant/text/wols_ca/#", "", retain=True)
+
 class MQTTMessageRouter:
     def __init__(self, uploader_version, product_key):
         self.uploader_version = uploader_version
@@ -90,7 +95,6 @@ class MQTTMessageRouter:
         except Exception: return False
         
         if topic == "wols_ca_mqtt/keys/public":
-            # Geef active_mqtt_broker mee aan Phase A
             public_key_handler.StepA_Process_PublicKey(client, msg, active_mqtt_user, active_mqtt_password, active_mqtt_broker, self.uploader_version)
             return True
             
@@ -135,7 +139,6 @@ class MQTTMessageRouter:
         
         if is_encrypted:
             try:
-                # WOLS CA FIX: Gebruik hier de bulk_encrypt_for_service uit de vorige ronde
                 envelope[key] = public_key_handler.bulk_encrypt_for_service(inner_payload_str)
             except Exception as e:
                 self.logger.error(f"Fout tijdens bulk encryptie: {e}")
@@ -171,4 +174,21 @@ class MQTTMessageRouter:
 
 def handle_mqtt_message(client, msg, uploader_version):
     global _router_instance
-    if _router_instance: return _router_instance.route_message(client, msg)
+    topic = msg.topic.lower()
+    
+    # --- WOLS CA State Tracking: Vang data van C++ Nodes op ---
+    if "/seawaterdetails/state/position" in topic:
+        try:
+            payload = msg.payload.decode().strip()
+            field_name = topic.split("/")[-1] # Position1, Position2...
+            data = json.loads(payload)
+            
+            # Sla de rauwe data op in de kluis voor de Web UI
+            secrets_handler.update_secret(f"State_{field_name}", payload)
+            logging.info(f"📥 Wols CA Data received for {field_name}: {data.get('temp')}°C at {data.get('location')}")
+        except Exception as e:
+            logging.error(f"Error parsing C++ state: {e}")
+
+    # --- Laat de router de rest van de logica (handshake, config) afhandelen ---
+    if _router_instance: 
+        return _router_instance.route_message(client, msg)
