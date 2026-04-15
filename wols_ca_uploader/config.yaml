@@ -1,5 +1,5 @@
 name: "Wols CA MQTT Automation Uploader"
-version: "0.7.5"
+version: "0.7.6"
 slug: "wols_ca_uploader"
 description: "Dual-Broker Secure Vault & DMZ Bridge for Wols CA C++ services"
 arch:
@@ -62,6 +62,14 @@ schema:
   mqtt_int_port: int
   mqtt_int_user: str?
   mqtt_int_password: password?
+  mqtt_int_broker: str
+  mqtt_int_port: int
+  mqtt_int_user: str?
+  mqtt_int_password: password?
+  mqtt_ser_broker: str?
+  mqtt_ser_port: int
+  mqtt_ser_user: str?
+  mqtt_ser_password: password?
   WolsCA_Service_InstanceID: str
   ConsoleToMqtt: bool
   LogModus: match(^(NOLOG|WARNING|ERROR|DEBUG|INFO)$)
