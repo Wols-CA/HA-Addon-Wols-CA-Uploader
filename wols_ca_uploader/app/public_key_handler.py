@@ -3,22 +3,19 @@ import json
 import logging
 import secrets
 import hashlib
+import random
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.exceptions import InvalidSignature
 
-# --- WOLS CA VERSIE CONTROLE ---
-UPLOADER_MIN_ACCEPTED_SERVICE = "0.5.0"
-UPLOADER_MAX_ACCEPTED_SERVICE = "2.9.9"
-
-def is_version_allowed(version, min_v, max_v):
-    def parse_v(v): return tuple(map(int, str(v).split('.')))
-    try: return parse_v(min_v) <= parse_v(version) <= parse_v(max_v)
-    except Exception: return False
+# ==============================================================================
+# WOLS CA IT SECURITY NG - HONEYTOKEN STATE MACHINE
+# ==============================================================================
+# Tracks the expected behavioral NACK/ACK sequence for each connecting hardware ID.
+active_handshakes = {}
 
 # Service Keys
 active_public_key = None  
-temp_public_key = None    
-stored_credentials = {}
 
 # Uploader Keys
 uploader_private_key = None
@@ -27,14 +24,14 @@ uploader_public_key_pem = None
 def init_uploader_keys():
     global uploader_private_key, uploader_public_key_pem
     if uploader_private_key is None:
-        logging.info("🔐 Wols CA: Genereren van eigen Uploader RSA-2048 sleutelpaar...")
+        logging.info("🔐 Wols CA: Generating internal Uploader RSA-2048 keypair...")
         uploader_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         uploader_public_key_pem = uploader_private_key.public_key().public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         ).decode('utf-8')
 
-# --- WOLS CA FIX: RSA Block Chunking (Max 190 bytes plaintext per encryptie) ---
+# --- RSA Block Chunking (Max 190 bytes plaintext per encryptie) ---
 def encrypt_data_chunked(public_key, plaintext):
     plaintext_bytes = plaintext.encode('utf-8')
     chunk_size = 190
@@ -60,100 +57,128 @@ def decrypt_data_chunked(private_key, encrypted_bytes):
         )
         decrypted_bytes.extend(decrypted_chunk)
     return decrypted_bytes.decode('utf-8')
-# ---------------------------------------------------------------------------------
 
-def StepA_Process_PublicKey(client, msg, mqtt_user, mqtt_password, mqtt_url, current_uploader_version):
-    global temp_public_key, stored_credentials
+# ==============================================================================
+# FASE 5: THE ZERO-TRUST HANDSHAKE
+# ==============================================================================
+
+def StepA_Process_Login_And_Challenge(client, msg, prod_url, prod_port, prod_user, prod_pass):
+    """
+    Receives the initial login from the C++ node, verifies the signature mathematically,
+    and generates the Honeytoken (Fake Secrets) Challenge.
+    """
+    global active_handshakes
     try:
-        payload_data = json.loads(msg.payload.decode('utf-8'))
-        raw_pub_key = payload_data.get("pub_key", "")
-        if isinstance(raw_pub_key, str):
-            raw_pub_key = raw_pub_key.replace('\\n', '\n').replace('\\r', '')
-
-        service_version = payload_data.get("service_version", "0.0.0")
-        req_min_uploader = payload_data.get("min_uploader", "0.0.0")
-        req_max_uploader = payload_data.get("max_uploader", "99.99.99")
-
-        if not is_version_allowed(service_version, UPLOADER_MIN_ACCEPTED_SERVICE, UPLOADER_MAX_ACCEPTED_SERVICE):
-            logging.error(f"❌ [Versie Controle] Service versie {service_version} is afgewezen.")
-            client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
+        payload = json.loads(msg.payload.decode('utf-8'))
+        
+        cpu_id = payload.get("cpu_id", "UNKNOWN")
+        raw_pub_key = payload.get("pub_key", "").replace('\\n', '\n')
+        the_secret = payload.get("secret", "")
+        signature_b64 = payload.get("signature", "")
+        
+        # 1. Load the ephemeral Public Key sent by the Service
+        spoke_pub_key = serialization.load_pem_public_key(raw_pub_key.encode('utf-8'))
+        
+        # 2. Verify Mathematical Signature
+        try:
+            signature_bytes = base64.b64decode(signature_b64)
+            spoke_pub_key.verify(
+                signature_bytes,
+                the_secret.encode('utf-8'),
+                padding.PKCS1v15(), # Standard C++ OpenSSL EVP_DigestSign uses PKCS1v15
+                hashes.SHA256()
+            )
+            logging.info(f"✅ Signature mathematically verified for {cpu_id}. Preparing Honeytoken Challenge.")
+        except InvalidSignature:
+            logging.error(f"🚨 SECURITY ALERT: Invalid signature for {cpu_id}. Dropping connection.")
             return
 
-        if not is_version_allowed(current_uploader_version, req_min_uploader, req_max_uploader):
-            logging.error(f"❌ [Versie Controle] Uploader v{current_uploader_version} is buiten de C++ eisen. Afgewezen.")
-            client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
-            return
-
-        new_key = serialization.load_pem_public_key(raw_pub_key.encode('utf-8'))
-        if isinstance(new_key, rsa.RSAPublicKey):
-            temp_public_key = new_key
-            init_uploader_keys()
+        # 3. Generate Honeytokens (Fake Secrets to weed out Bots)
+        num_fakes = random.randint(1, 3)
+        challenges = []
+        expected_sequence = []
+        
+        for _ in range(num_fakes):
+            fake_secret = secrets.token_hex(16)
+            enc_fake = encrypt_data_chunked(spoke_pub_key, fake_secret)
+            challenges.append(base64.b64encode(enc_fake).decode('utf-8'))
+            expected_sequence.append("NACK")
             
-            safe_pass = mqtt_password if mqtt_password else ""
-            from secrets_handler import get_secret
-            product_key = get_secret("wols_ca_product_key")
-            
-            ephemeral_session = f"wols_ca_mqtt/session/{secrets.token_hex(12)}"
-            
-            stored_credentials = {
-                "url": mqtt_url, "user": mqtt_user, "pass": safe_pass, 
-                "mailbox": product_key, "session_topic": ephemeral_session,
-                "uploader_pub_key": uploader_public_key_pem, "uploader_version": current_uploader_version
+        # 4. Add the True Secret at the end
+        enc_real = encrypt_data_chunked(spoke_pub_key, the_secret)
+        challenges.append(base64.b64encode(enc_real).decode('utf-8'))
+        
+        # The expected ACK must contain the SHA-256 hash of the true secret
+        expected_hash = hashlib.sha256(the_secret.encode('utf-8')).hexdigest()
+        expected_sequence.append(f"ACK:{expected_hash}")
+        
+        # 5. Store State for Behavioral Analysis
+        active_handshakes[cpu_id] = {
+            "expected_sequence": expected_sequence,
+            "current_index": 0,
+            "pub_key": spoke_pub_key, 
+            "prod_credentials": {
+                "url": prod_url,
+                "port": prod_port,
+                "user": prod_user,
+                "pass": prod_pass
             }
-            
-            logging.info(f"🚀 [Step A] Genereren Ephemeral Channel: {ephemeral_session}")
-            payload = json.dumps(stored_credentials)
-            send_encrypted_payload(client, "wols_ca_mqtt/admin/encrypted_credentials", payload, use_temp=True)
-            
-    except Exception as e: logging.error(f"[Step A] Fout bij verwerken Service Public Key: {e}")
+        }
+        
+        # 6. Send Challenges (Grouped in an array to guarantee MQTT arrival order)
+        challenge_payload = json.dumps({"cpu_id": cpu_id, "challenges": challenges})
+        client.publish("wols_ca_mqtt/admin/challenge", challenge_payload, qos=1)
+        
+    except Exception as e:
+        logging.error(f"Error in Step A (Challenge Generation): {e}")
 
-def StepC_Verify_Service_And_Respond(client, msg):
-    global temp_public_key, active_public_key, stored_credentials
+def StepB_Process_Response(client, msg):
+    """
+    Evaluates the incoming NACK/ACK sequence from the C++ Service.
+    If the sequence is perfect, issues the production credentials.
+    """
+    global active_handshakes, active_public_key
     try:
-        envelope = json.loads(msg.payload.decode())
-        data_str = envelope.get("data", "")
-        incoming_signature = envelope.get("signature", "")
+        payload = json.loads(msg.payload.decode('utf-8'))
+        cpu_id = payload.get("cpu_id")
+        response = payload.get("response") # E.g., "NACK" or "ACK:<hash>"
         
-        secret_string = data_str + stored_credentials.get("pass", "")
-        raw_hash = hashlib.sha256(secret_string.encode('utf-8'))
+        if cpu_id not in active_handshakes:
+            return # Ignore orphaned responses
+            
+        state = active_handshakes[cpu_id]
+        expected_response = state["expected_sequence"][state["current_index"]]
         
-        expected_hex = raw_hash.hexdigest().lower()
-        expected_b64 = base64.b64encode(raw_hash.digest()).decode('utf-8')
-        
-        if incoming_signature.lower() != expected_hex and incoming_signature != expected_b64:
-            client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
+        # Evaluate Behavioral Logic
+        if response != expected_response:
+            logging.error(f"🚨 BOT DETECTED: Incorrect Honeytoken sequence from {cpu_id}. Disconnecting.")
+            del active_handshakes[cpu_id]
+            client.publish(f"wols_ca_mqtt/admin/production_credentials/{cpu_id}", "FAIL", qos=1)
             return
+            
+        state["current_index"] += 1
+        
+        # Check if the full challenge sequence is complete
+        if state["current_index"] == len(state["expected_sequence"]):
+            logging.info(f"🚀 Honeytoken Challenge PASSED for {cpu_id}! Handing over Production Credentials.")
+            
+            prod_creds = state["prod_credentials"]
+            spoke_pub_key = state["pub_key"]
+            
+            # Encrypt the final production credentials (The Crown Jewels)
+            final_payload = json.dumps(prod_creds)
+            enc_final = encrypt_data_chunked(spoke_pub_key, final_payload)
+            b64_final = base64.b64encode(enc_final).decode('utf-8')
+            
+            # Send them and promote the ephemeral key to active production key
+            client.publish(f"wols_ca_mqtt/admin/production_credentials/{cpu_id}", b64_final, qos=1)
+            active_public_key = spoke_pub_key
+            del active_handshakes[cpu_id]
+            
+    except Exception as e:
+        logging.error(f"Error in Step B (Response Evaluation): {e}")
 
-        data = json.loads(data_str)
-        if (data.get("url") == stored_credentials["url"] and data.get("user") == stored_credentials["user"]):
-            
-            server_name = data.get("server_name", "Unknown_Service")
-            session_topic = stored_credentials.get("session_topic")
-            
-            import mqtt_triggers
-            mqtt_triggers.register_new_session(client, server_name, session_topic)
-            logging.info(f"🚀 [Step C] Service '{server_name}' geverifieerd! Mutual RSA geactiveerd.")
-            
-            new_key_pem = data.get("new_pub_key")
-            if isinstance(new_key_pem, str):
-                new_key_pem = new_key_pem.replace('\\n', '\n').replace('\\r', '')
-
-            active_public_key = serialization.load_pem_public_key(new_key_pem.encode())
-            temp_public_key = None
-            
-            verify_payload = json.dumps({"verify": "WolsCA_Uploader_Verified"})
-            send_encrypted_payload(client, "wols_ca_mqtt/admin/uploader_verify", verify_payload)
-        else:
-            client.publish("wols_ca_mqtt/admin/password_ack", "NACK", qos=1, retain=False)
-            
-    except Exception as e: logging.error(f"[Step C] Error verifying service: {e}")
-
-def send_encrypted_payload(client, topic, plaintext, use_temp=False):
-    key_to_use = temp_public_key if use_temp else active_public_key
-    if not key_to_use: return
-    encrypted = encrypt_data_chunked(key_to_use, plaintext)
-    b64_string = base64.b64encode(encrypted).decode('utf-8')
-    client.publish(topic, b64_string, qos=1, retain=False)
+# --- Helper functions for post-handshake operational phase ---
 
 def decrypt_from_service(b64_encrypted_payload):
     global uploader_private_key
@@ -166,21 +191,6 @@ def decrypt_from_service(b64_encrypted_payload):
         return None
 
 def bulk_encrypt_for_service(plaintext):
-    """Helper voor mqtt_triggers om grote data te versleutelen."""
     if not active_public_key: raise ValueError("No active key")
     encrypted = encrypt_data_chunked(active_public_key, plaintext)
     return base64.b64encode(encrypted).decode('utf-8')
-
-def handle_ack(payload):
-    if payload == "ACK": logging.info("🚀 [Wols CA Handshake Complete] Mutual Authentication & Burner Channel Actief.")
-    elif payload == "NACK": logging.error("❌ [Handshake Failed] Service rejected the verification.")
-
-def update_rolling_key(new_pem_string):
-    global active_public_key
-    try:
-        if isinstance(new_pem_string, str): new_pem_string = new_pem_string.replace('\\n', '\n').replace('\\r', '')
-        new_key = serialization.load_pem_public_key(new_pem_string.encode())
-        if isinstance(new_key, rsa.RSAPublicKey):
-            active_public_key = new_key
-            logging.info("🚀 [Rolling Key] Security upgraded with new RSA generation.")
-    except Exception as e: logging.error(f"Rolling Key update failed: {e}")

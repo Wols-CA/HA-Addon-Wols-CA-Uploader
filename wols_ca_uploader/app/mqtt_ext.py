@@ -2,45 +2,53 @@ import json
 import hashlib
 import time
 import re
+import logging
 from mqtt_util import MQTTBaseClient
 import public_key_handler
 import secrets_handler
 
+# ==============================================================================
+# WOLS CA IT SECURITY NG - EXTERNAL BRIDGE (DMZ)
+# ==============================================================================
+
 # WOLS CA SHADOW REGISTRY
+# Tracks active sessions per Service Node to push dynamic configurations
 shadow_registry = {}
 
 def register_new_session(client_ext, server_name, new_session_topic):
-    """Clears old MQTT traces on External Broker (Trace Wiping)"""
+    """Clears old MQTT traces on External Broker and registers the new session."""
     global shadow_registry
     old_topic = shadow_registry.get(server_name)
     if old_topic and old_topic != new_session_topic:
+        # Wipe old retained configuration messages to maintain a clean Zero-Trust environment
         for key in ["haservicesettings", "seawaterdetails", "spotifydetails"]:
             client_ext.publish(f"{old_topic}/{key}", "", retain=True)
             
     shadow_registry[server_name] = new_session_topic
+    logging.info(f"🔄 Registered active session for {server_name}: {new_session_topic}")
 
 class MQTTExternalBridge(MQTTBaseClient):
-    def __init__(self, client_id, broker_ip, port, user, password, product_key, data_callback, uploader_version="0.7.0"):
+    def __init__(self, client_id, broker_ip, port, user, password, product_key, data_callback, uploader_version="1.0.0", service_id=None, ser_config=None):
         super().__init__(client_id, broker_ip, port, user, password)
         self.product_key = product_key
         self.ext_password = password
         self.ext_user = user
         self.data_callback = data_callback # The 'mailbox' to the internal network
         self.uploader_version = uploader_version
+        self.service_id = service_id # WolsCA Hub Identity
+        
+        # Used to pass the definitive production credentials to the C++ node during the handshake
+        self.ser_config = ser_config if ser_config else {}
 
     def on_successful_connect(self):
-        self.logger.info("🌐 EXTERNAL: Zero-Trust Zone ready. Subscribing to public channels...")
+        self.logger.info("🌐 EXTERNAL: Zero-Trust DMZ ready. Subscribing to secure channels...")
         
-        # Subscribe to public handshake paths and dynamic session paths
+        # Subscribe to the new Phase 5 Honeytoken Handshake paths
         self.client.subscribe([
-            ("wols_ca_mqtt/keys/public", 1),
-            ("wols_ca_mqtt/admin/service_verify", 1),
-            ("wols_ca_mqtt/admin/password_ack", 1),
-            ("wols_ca_mqtt/session/#", 1)
+            ("wols_ca_mqtt/admin/login", 1),              # Initial login & Challenge request
+            ("wols_ca_mqtt/admin/challenge_response", 1), # Incoming NACK/ACK from the Service
+            ("wols_ca_mqtt/session/#", 1)                 # Operational Data & Config Requests
         ])
-        
-        # Trigger any connected services to start the handshake
-        self.publish("wols_ca_mqtt/admin/request_key", "STARTUP_SYNC", retain=False)
 
     def on_message(self, client, userdata, msg):
         topic = msg.topic.lower()
@@ -49,42 +57,47 @@ class MQTTExternalBridge(MQTTBaseClient):
             payload_str = msg.payload.decode().strip()
         except Exception: return
         
-        # --- 1. PROCESS INCOMING SECURE SEAWATER DATA ---
+        # --- 1. PROCESS INCOMING SECURE SEAWATER DATA (OPERATIONAL) ---
         if "/seawaterdetails/state/position" in topic:
             self._process_encrypted_seawater(payload_str)
             return
 
-        # --- 2. WOLS CA HANDSHAKE LOGIC ---
-        if topic == "wols_ca_mqtt/keys/public":
-            public_key_handler.StepA_Process_PublicKey(
-                self.client, msg, self.ext_user, self.ext_password, 
-                self.broker_ip, self.uploader_version
+        # --- 2. PHASE 5: WOLS CA HONEYTOKEN HANDSHAKE ---
+        if topic == "wols_ca_mqtt/admin/login":
+            self.logger.info("📥 Incoming Service Login detected. Initiating Phase 5 Challenge...")
+            # We pass the production credentials down to the handler. 
+            # They will ONLY be sent if the Service passes the Honeytoken test.
+            public_key_handler.StepA_Process_Login_And_Challenge(
+                self.client, 
+                msg, 
+                prod_url=self.ser_config.get("broker", self.broker_ip), 
+                prod_port=self.ser_config.get("port", self.port), 
+                prod_user=self.ser_config.get("user", self.ext_user), 
+                prod_pass=self.ser_config.get("pass", self.ext_password)
             )
             return
             
-        if topic == "wols_ca_mqtt/admin/service_verify":
-            # Override register session callback dynamically for Step C
-            import public_key_handler
-            import mqtt_ext
-            mqtt_ext.register_new_session = register_new_session
-            
-            public_key_handler.StepC_Verify_Service_And_Respond(self.client, msg)
-            return
-            
-        if topic == "wols_ca_mqtt/admin/password_ack":
-            public_key_handler.handle_ack(payload_str)
-            if payload_str == "ACK":
-                self.logger.info("🚀 Actively pushing Wols CA Configuration to Shadow Registry Sessions...")
-                self._send_ha_service_settings()
-                self._send_spotify_details()
-                self._send_seawater_details()
+        if topic == "wols_ca_mqtt/admin/challenge_response":
+            public_key_handler.StepB_Process_Response(self.client, msg)
             return
         
-        # --- 3. EPHEMERAL CHANNEL REQUESTS ---
+        # --- 3. EPHEMERAL/OPERATIONAL CHANNEL REQUESTS ---
         if topic.startswith("wols_ca_mqtt/session/") and topic.endswith("/requests"):
-            if "REQ_CONFIG_SEAWATER" in payload_str:
-                self.logger.info("📥 C++ Service requested SeaWater data on Ephemeral Channel. Resending...")
-                self._send_seawater_details()
+            if "REQ_CONFIG" in payload_str:
+                # Extract CPU ID / Server Name from the topic: wols_ca_mqtt/session/{cpu_id}/requests
+                try:
+                    server_name = topic.split("/")[2]
+                    session_topic = f"wols_ca_mqtt/session/{server_name}"
+                    
+                    self.logger.info(f"📥 C++ Service ({server_name}) requested configuration sync.")
+                    register_new_session(self.client, server_name, session_topic)
+                    
+                    # Push all configurations to the new verified session
+                    self._send_ha_service_settings()
+                    self._send_spotify_details()
+                    self._send_seawater_details()
+                except IndexError:
+                    self.logger.error("Malformed session request topic.")
             return
 
     def _process_encrypted_seawater(self, b64_payload):
@@ -127,7 +140,15 @@ class MQTTExternalBridge(MQTTBaseClient):
     def _send_config_response(self, key, data):
         is_encrypted = public_key_handler.active_public_key is not None
         inner_payload_str = json.dumps(data)
-        envelope = {"header": {"from": "ha_uploader", "timestamp": int(time.time()), "encrypted": is_encrypted}}
+        
+        # WOLS CA FIX: Use self.service_id (e.g. WolsHub01) in the header
+        envelope = {
+            "header": {
+                "from": self.service_id, 
+                "timestamp": int(time.time()), 
+                "encrypted": is_encrypted
+            }
+        }
         
         if is_encrypted:
             try:
@@ -147,6 +168,7 @@ class MQTTExternalBridge(MQTTBaseClient):
             for server_name, session_topic in shadow_registry.items():
                 dynamic_topic = f"{session_topic}/{key.lower()}"
                 self.publish(dynamic_topic, json.dumps(envelope), retain=False)
+                self.logger.info(f"📤 Pushed {key} to {dynamic_topic}")
 
     def _send_ha_service_settings(self):
         self._send_config_response("HAServiceSettings", {

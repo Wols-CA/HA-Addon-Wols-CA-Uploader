@@ -1,5 +1,5 @@
 name: "Wols CA MQTT Automation Uploader"
-version: "0.7.3"
+version: "0.7.4"
 slug: "wols_ca_uploader"
 description: "Dual-Broker Secure Vault & DMZ Bridge for Wols CA C++ services"
 arch:
@@ -15,16 +15,26 @@ panel_icon: mdi:security
 panel_title: "a Wols CA System"
 # --------------------------------
 options:
-  # Externe Broker (EMQX - Zero Trust)
+# --- 0. Subscription Broker (DMZ/Cloud - Handle subscription new service) ---
+  mqtt_sub_broker: "core-mosquitto"
+  mqtt_sub_port: 1883
+  mqtt_sub_user: "uploader_provisioning"
+  mqtt_sub_password: ""
+  # Interne Broker (MQTT Server - Safe Zone - Internal)
+  mqtt_int_broker: ""
+  mqtt_int_port: 1883
+  mqtt_int_user: "uploader_internal"
+  mqtt_int_password: ""
+  # Externe Broker (MQTT Server - Zero Trust - DMZ or Cloud)
   mqtt_ext_broker: ""
   mqtt_ext_port: 1883
-  mqtt_ext_user: ""
+  mqtt_ext_user: "uploader_external"
   mqtt_ext_password: ""
-  # Interne Broker (Home Assistant Mosquitto - Safe Zone)
-  mqtt_int_broker: "core-mosquitto"
-  mqtt_int_port: 1883
-  mqtt_int_user: "addons"
-  mqtt_int_password: ""
+  # Interne Broker (MQTT Server -Cloud
+  mqtt_ser_broker: ""
+  mqtt_ser_port: 1883
+  mqtt_ser_user: "wols_ca_service"
+  mqtt_ser_password: ""
   
   WolsCA_Service_InstanceID: "WolsHub01"
   ConsoleToMqtt: false
@@ -40,6 +50,10 @@ options:
   SensorInterval: 30
 schema:
   uploader_id: str?
+  mqtt_sub_broker: str
+  mqtt_sub_port: int
+  mqtt_sub_user: str
+  mqtt_sub_password: password?
   mqtt_ext_broker: str
   mqtt_ext_port: int
   mqtt_ext_user: str?
