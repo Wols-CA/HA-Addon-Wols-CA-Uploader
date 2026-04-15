@@ -17,6 +17,7 @@ COPY app/wols_ca_uploader.py .
 COPY app/mqtt_util.py .
 COPY app/mqtt_int.py .
 COPY app/mqtt_ext.py .
+COPY app/mqtt_sub.py .
 COPY app/public_key_handler.py .
 COPY app/secrets_handler.py .
 COPY app/wols_ca_web_ui.py .
